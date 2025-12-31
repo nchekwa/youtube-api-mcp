@@ -16,9 +16,12 @@ class TranscriptResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = Field(..., description="Service status")
+    
+class CacheResponse(BaseModel):
+    """Cache check response."""
+    status: str = Field(..., description="Service status")
     cache_size: int = Field(..., ge=0, description="Number of cached items")
     cache_path: str = Field(..., description="Cache directory path")
-
 
 class TranscriptRequest(BaseModel):
     """Request parameters for transcript endpoint."""

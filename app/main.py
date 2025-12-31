@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from app.config import settings
 from app.routers import transcript
-from app.models import HealthResponse
+from app.models import HealthResponse, CacheResponse
 from app.services.cache_service import CacheService
 from app.mcp.server import mcp
 from app.middleware.auth import build_mcp_middleware_from_settings
@@ -74,8 +74,16 @@ async def root():
 @app.get(f"{settings.APP_API_PREFIX}/health", response_model=HealthResponse, tags=["default"])
 async def health_check():
     """Health check endpoint with cache information."""
-    cache_size = cache_service.get_cache_size()
     return HealthResponse(
+        status="healthy"
+    )
+
+
+@app.get(f"{settings.APP_API_PREFIX}/cache", response_model=CacheResponse, tags=["default"])
+async def cache_check():
+    """Cache check endpoint with cache information."""
+    cache_size = cache_service.get_cache_size()
+    return CacheResponse(
         status="healthy",
         cache_size=cache_size,
         cache_path=str(cache_service.cache_dir)
