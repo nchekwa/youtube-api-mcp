@@ -36,7 +36,6 @@ services:
       - _APP_CACHE_TTL_DAYS
 
       # Functionality
-      - _APP_DEFAULT_LANGUAGE
       - _APP_USE_CACHE_DEFAULT
 
       # API Key Authentication

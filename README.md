@@ -6,7 +6,7 @@ API service to fetch YouTube video transcripts with metadata and local file cach
 
 - 📥 Fetch YouTube video transcripts with metadata
 - 💾 Local file caching with TTL (30 days default)
-- 🌍 Multi-language support with automatic fallback to any available transcript
+- 🌍 Always returns first available transcript (native/original language)
 - 🐳 Docker support
 - 🔌 MCP (Model Context Protocol) server integration
 - 📚 Interactive Swagger documentation
@@ -76,13 +76,12 @@ Returns cache statistics and service health.
 ### 2. Get Transcript with Basic Metadata
 
 ```bash
-GET /api/v1/youtube/transcript/{video_id}?language=en&use_cache=true
+GET /api/v1/youtube/transcript/{video_id}?use_cache=true
 ```
 
 **Parameters:**
 - `video_id` (path): YouTube video ID (11 chars) or full URL
   - Examples: `mQ-y2ZOTpr4` or `https://www.youtube.com/watch?v=mQ-y2ZOTpr4`
-- `language` (query): Language code (default: `en`)
 - `use_cache` (query): Enable/disable cache (default: `true`)
 
 **Returns basic metadata (7 fields):**
@@ -116,13 +115,13 @@ GET /api/v1/youtube/transcript/{video_id}?language=en&use_cache=true
 
 **Example:**
 ```bash
-curl "http://localhost:8000/api/v1/youtube/transcript/mQ-y2ZOTpr4?language=en"
+curl "http://localhost:8000/api/v1/youtube/transcript/mQ-y2ZOTpr4"
 ```
 
 ### 3. Get Transcript with Full Metadata
 
 ```bash
-GET /api/v1/youtube/transcript/raw/{video_id}?language=en&use_cache=true
+GET /api/v1/youtube/transcript/raw/{video_id}?use_cache=true
 ```
 
 Returns **complete yt-dlp metadata** (50+ fields) including:
@@ -135,7 +134,7 @@ Returns **complete yt-dlp metadata** (50+ fields) including:
 
 **Example:**
 ```bash
-curl "http://localhost:8000/api/v1/youtube/transcript/raw/mQ-y2ZOTpr4?language=en"
+curl "http://localhost:8000/api/v1/youtube/transcript/raw/mQ-y2ZOTpr4"
 ```
 
 ### 4. Root Endpoint
@@ -148,19 +147,19 @@ Returns API information and available endpoints.
 
 ## Behavior
 
-### Language Fallback
+### Language Handling
 
-When a requested language is unavailable, the API automatically falls back to the first available transcript:
-- Request: `language=pl` (Polish not available)
-- Response: `language=<actual_language>` with available transcript (e.g., `en`, `de`, `pl`, etc.)
-- Cache: Stored as `video_id_<actual_language>.json`
-- Prioritizes: Manual transcripts over auto-generated ones
+The API always returns the **first available transcript** (usually the native/original language):
+- Prefers: Manual transcripts over auto-generated ones
+- No language parameter needed
+- Response includes `language` field to indicate which language was returned
+- Cache: Stored as `video_id.json` (one file per video)
 
 ### Cache Logic
 
-1. First checks cache for requested language (e.g., `pl`)
-2. If not in cache: Fetches from YouTube with automatic language fallback
-3. Saves to cache using the actual language returned by YouTube
+1. First checks cache for video ID
+2. If not in cache: Fetches from YouTube (first available transcript)
+3. Saves to cache as `<video_id>.json`
 4. Next request: Returns cached data with `cache_used: true`
 
 ## Documentation
@@ -176,7 +175,7 @@ MCP (Model Context Protocol) server is integrated with FastAPI and supports **St
 - **MCP Endpoint**: `http://localhost:8000/api/v1/mcp`
 - **Transport**: StreamableHttpTransport (efficient bidirectional streaming over HTTP)
 - **Tools**:
-  - `get_youtube_transcript` - Fetch transcript with basic metadata from YouTube video
+  - `get_youtube_transcript` - Fetch transcript with basic metadata from YouTube video (first available language)
   - `clear_cache` - Clear cached transcript for a specific video
 
 ### MCP Tool Example
@@ -234,7 +233,6 @@ _APP_CACHE_TTL_DAYS=30                    # Cache time-to-live in days (default:
 # ======================
 # FUNCTIONALITY
 # ======================
-_APP_DEFAULT_LANGUAGE=en                  # Default language code (default: en)
 _APP_USE_CACHE_DEFAULT=true               # Enable caching by default (default: true)
 
 # ======================
@@ -277,7 +275,7 @@ Current version: 1.0.0
 
 All features implemented:
 - ✅ Cache service (init, read, write, size tracking, TTL)
-- ✅ YouTube service (fetch transcript, full metadata, language fallback)
+- ✅ YouTube service (fetch transcript, full metadata, first available language)
 - ✅ API endpoints (transcript, raw, health)
 - ✅ Rate limiting (30 req/min default)
 - ✅ Docker configuration
@@ -291,14 +289,14 @@ All features implemented:
 Cache files are stored as JSON:
 ```
 cache/
-├── {video_id}_{language}.json
-└── qrxI6gBn3YE_en.json
+├── {video_id}.json
+└── qrxI6gBn3YE.json
 ```
 
 Each cache file contains:
 - `video_id` - YouTube video ID
-- `transcript` - Full transcript text
-- `language` - Actual language code
+- `transcript` - Full transcript text (first available language)
+- `language` - Language code of the transcript
 - `cache_used` - Always `true` when loaded from cache
 - `cached_at` - ISO timestamp when cached
 - `metadata` - Full yt-dlp metadata (all fields)

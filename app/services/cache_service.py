@@ -32,32 +32,30 @@ class CacheService:
             return 0
         return len(list(self.cache_dir.glob("*.json")))
 
-    def _get_cache_file_path(self, video_id: str, language: str = "pl") -> Path:
+    def _get_cache_file_path(self, video_id: str) -> Path:
         """
         Generate cache file path for a video.
 
         Args:
             video_id: YouTube video ID
-            language: Language code
 
         Returns:
             Path to cache file
         """
-        filename = f"{video_id}_{language}.json"
+        filename = f"{video_id}.json"
         return self.cache_dir / filename
 
-    def get_cached_transcript(self, video_id: str, language: str = "pl") -> dict | None:
+    def get_cached_transcript(self, video_id: str) -> dict | None:
         """
         Get transcript from cache if available and not expired.
 
         Args:
             video_id: YouTube video ID
-            language: Language code
 
         Returns:
             Cached transcript dict or None if not found/expired
         """
-        cache_file = self._get_cache_file_path(video_id, language)
+        cache_file = self._get_cache_file_path(video_id)
 
         if not cache_file.exists():
             return None
@@ -81,16 +79,15 @@ class CacheService:
             cache_file.unlink(missing_ok=True)
             return None
 
-    def save_transcript(self, video_id: str, data: dict, language: str = "pl") -> None:
+    def save_transcript(self, video_id: str, data: dict) -> None:
         """
         Save transcript to cache.
 
         Args:
             video_id: YouTube video ID
             data: Transcript data to cache
-            language: Language code
         """
-        cache_file = self._get_cache_file_path(video_id, language)
+        cache_file = self._get_cache_file_path(video_id)
 
         # Add cache metadata
         data['cached_at'] = datetime.now().isoformat()
@@ -99,30 +96,29 @@ class CacheService:
         with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def clear_cache(self, video_id: str, language: str = "en") -> dict:
+    def clear_cache(self, video_id: str) -> dict:
         """
         Clear cached transcript for a specific video.
 
         Args:
             video_id: YouTube video ID
-            language: Language code
 
         Returns:
             Dict with status and message
         """
-        cache_file = self._get_cache_file_path(video_id, language)
+        cache_file = self._get_cache_file_path(video_id)
 
         if not cache_file.exists():
             return {
                 "success": False,
-                "message": f"No cache found for video {video_id} (language: {language})"
+                "message": f"No cache found for video {video_id}"
             }
 
         try:
             cache_file.unlink()
             return {
                 "success": True,
-                "message": f"Cache cleared for video {video_id} (language: {language})"
+                "message": f"Cache cleared for video {video_id}"
             }
         except Exception as e:
             return {

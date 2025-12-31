@@ -50,13 +50,12 @@ class YouTubeService:
 
         raise ValueError(f"Invalid YouTube URL or ID: {url_or_id}")
 
-    def fetch_transcript(self, video_id: str, language: str = "en") -> dict:
+    def fetch_transcript(self, video_id: str) -> dict:
         """
-        Fetch transcript for a YouTube video.
+        Fetch transcript for a YouTube video (first available language).
 
         Args:
             video_id: YouTube video ID
-            language: Language code for transcript (default: en)
 
         Returns:
             Dict with transcript data including metadata
@@ -65,24 +64,22 @@ class YouTubeService:
             ValueError: If video is invalid or transcript not available
         """
         try:
-            # Try to fetch transcript for requested language
-            try:
-                transcript_list = self.api.fetch(video_id, languages=[language])
-            except (NoTranscriptFound, VideoUnavailable):
-                # If requested language not found, fallback to first available transcript
-                transcript_data = self.api.list(video_id)
-                # Get the first available manually created transcript
-                available = [t for t in transcript_data if not t.is_generated]
-                if not available:
-                    # If no manual transcripts, use generated ones
-                    available = list(transcript_data)
+            # Get first available transcript (prefers manual over auto-generated)
+            transcript_data = self.api.list(video_id)
 
-                if available:
-                    first_transcript = available[0]
-                    transcript_list = first_transcript.fetch()
-                    language = first_transcript.language_code
-                else:
-                    raise ValueError(f"No transcript found for video {video_id}")
+            # Prefer manually created transcripts
+            available = [t for t in transcript_data if not t.is_generated]
+            if not available:
+                # If no manual transcripts, use generated ones
+                available = list(transcript_data)
+
+            if not available:
+                raise ValueError(f"No transcript found for video {video_id}")
+
+            # Fetch the first available transcript
+            first_transcript = available[0]
+            transcript_list = first_transcript.fetch()
+            language = first_transcript.language_code
 
             # Combine transcript text
             transcript_text = " ".join([entry.text for entry in transcript_list])
@@ -102,7 +99,7 @@ class YouTubeService:
         except TranscriptsDisabled:
             raise ValueError(f"Transcripts are disabled for video {video_id}")
         except NoTranscriptFound:
-            raise ValueError(f"No transcript found for video {video_id} in language {language}")
+            raise ValueError(f"No transcript found for video {video_id}")
         except VideoUnavailable:
             raise ValueError(f"Video {video_id} is unavailable")
         except Exception as e:

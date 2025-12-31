@@ -35,7 +35,6 @@ youtube_service = YouTubeService()
 @router.get("/raw/{video_id:path}", response_model=dict, summary="Get Full YouTube Metadata")
 async def get_transcript_raw(
     video_id: str,
-    language: str = Query(default="en", description="Language code (e.g., 'en', 'pl')"),
     use_cache: bool = Query(default=True, description="Use cached data if available")
 ):
     """
@@ -43,13 +42,12 @@ async def get_transcript_raw(
 
     **Features:**
     - Extracts video ID from full URL or accepts 11-character ID
-    - Falls back to first available transcript if requested language is unavailable
+    - Always returns first available transcript (native/original language)
     - Caches results locally (30 days TTL)
     - Returns **full metadata** with all yt-dlp fields
 
     **Parameters:**
     - `video_id`: YouTube video ID (11 chars) or full URL (goes after /raw/)
-    - `language`: ISO language code (default: en)
     - `use_cache`: Enable/disable cache (default: true)
 
     **Example:**
@@ -58,7 +56,7 @@ async def get_transcript_raw(
 
     **Returns:**
     - `video_id`: Unique YouTube identifier
-    - `transcript`: Full transcript text
+    - `transcript`: Full transcript text (first available language)
     - `metadata`: Complete yt-dlp metadata (50+ fields including:
       - Basic: title, author, duration, views, upload date
       - Engagement: likes, comments
@@ -66,7 +64,7 @@ async def get_transcript_raw(
       - Technical: resolution, codecs, format, filesize
       - Channel: channel_id, followers, location
       - Subtitles: available and auto-generated captions)
-    - `language`: Actual language code used
+    - `language`: Language code of the returned transcript
     - `cache_used`: Whether response came from cache (true) or was fetched fresh (false)
     - `cached_at`: ISO timestamp when cached (null if cache_used=false)
     """
@@ -76,43 +74,28 @@ async def get_transcript_raw(
 
         # Check cache first if enabled
         if use_cache:
-            # Try requested language first
-            cached = cache_service.get_cached_transcript(video_id, language)
+            cached = cache_service.get_cached_transcript(video_id)
             if cached:
                 return {
                     "video_id": video_id,
                     "transcript": cached.get("transcript", ""),
-                    "language": cached.get("language", language),
+                    "language": cached.get("language", "unknown"),
                     "cache_used": True,
                     "cached_at": cached.get("cached_at"),
                     "metadata": cached.get("metadata", {})
                 }
 
-        # Fetch from YouTube (may fallback to any available language)
-        transcript_data = youtube_service.fetch_transcript(video_id, language)
+        # Fetch from YouTube (first available transcript)
+        transcript_data = youtube_service.fetch_transcript(video_id)
 
-        # Check cache again using the ACTUAL language returned by YouTube
+        # Save to cache
         if use_cache:
-            actual_language = transcript_data["language"]
-            # Only save if we don't already have it cached
-            cached = cache_service.get_cached_transcript(video_id, actual_language)
-            if cached:
-                return {
-                    "video_id": video_id,
-                    "transcript": cached.get("transcript", ""),
-                    "language": cached.get("language", actual_language),
-                    "cache_used": True,
-                    "cached_at": cached.get("cached_at"),
-                    "metadata": cached.get("metadata", {})
-                }
-
-            # Save to cache using the ACTUAL language fetched
-            cache_service.save_transcript(video_id, transcript_data, actual_language)
+            cache_service.save_transcript(video_id, transcript_data)
 
         return {
             "video_id": video_id,
             "transcript": transcript_data.get("transcript", ""),
-            "language": transcript_data.get("language", language),
+            "language": transcript_data.get("language", "unknown"),
             "cache_used": False,
             "cached_at": None,
             "metadata": transcript_data.get("metadata", {})
@@ -133,7 +116,6 @@ async def get_transcript_raw(
 @router.get("/{video_id:path}", response_model=TranscriptResponse, summary="Get YouTube Video Transcript")
 async def get_transcript(
     video_id: str,
-    language: str = Query(default="en", description="Language code (e.g., 'en', 'pl')"),
     use_cache: bool = Query(default=True, description="Use cached data if available")
 ):
     """
@@ -141,13 +123,12 @@ async def get_transcript(
 
     **Features:**
     - Extracts video ID from full URL or accepts 11-character ID
-    - Falls back to first available transcript if requested language is unavailable
+    - Always returns first available transcript (native/original language)
     - Caches results locally (30 days TTL)
     - Returns basic metadata: title, author, duration, views, publish date, thumbnail, description
 
     **Parameters:**
     - `video_id`: YouTube video ID (11 chars) or full URL
-    - `language`: ISO language code (default: en)
     - `use_cache`: Enable/disable cache (default: true)
 
     **Example:**
@@ -156,7 +137,7 @@ async def get_transcript(
 
     **Returns:**
     - `video_id`: Unique YouTube identifier
-    - `transcript`: Full transcript text
+    - `transcript`: Full transcript text (first available language)
     - `metadata`: Basic video info including:
       - `title`: Video title
       - `author`: Channel/author name
@@ -165,7 +146,7 @@ async def get_transcript(
       - `view_count`: Number of views
       - `thumbnail`: URL to video thumbnail (can be null)
       - `description`: Video description (can be null)
-    - `language`: Actual language code used
+    - `language`: Language code of the returned transcript
     - `cache_used`: Whether response came from cache (true) or was fetched fresh (false)
     - `cached_at`: ISO timestamp when cached (null if cache_used=false)
     """
@@ -175,29 +156,18 @@ async def get_transcript(
 
         # Check cache first if enabled
         if use_cache:
-            # Try requested language first
-            cached = cache_service.get_cached_transcript(video_id, language)
+            cached = cache_service.get_cached_transcript(video_id)
             if cached:
                 # Extract basic metadata from full metadata in cache
                 cached["metadata"] = _extract_basic_metadata(cached["metadata"])
                 return TranscriptResponse(**cached)
 
-        # Fetch from YouTube (may fallback to any available language)
-        transcript_data = youtube_service.fetch_transcript(video_id, language)
+        # Fetch from YouTube (first available transcript)
+        transcript_data = youtube_service.fetch_transcript(video_id)
 
-        # Check cache again using the ACTUAL language returned by YouTube
-        # This prevents re-fetching if we already have it cached under the fallback language
+        # Save to cache
         if use_cache:
-            actual_language = transcript_data["language"]
-            # Only save if we don't already have it cached
-            cached = cache_service.get_cached_transcript(video_id, actual_language)
-            if cached:
-                # Extract basic metadata from full metadata in cache
-                cached["metadata"] = _extract_basic_metadata(cached["metadata"])
-                return TranscriptResponse(**cached)
-
-            # Save to cache using the ACTUAL language fetched
-            cache_service.save_transcript(video_id, transcript_data, actual_language)
+            cache_service.save_transcript(video_id, transcript_data)
 
         # Extract basic metadata for response (cache has full metadata)
         transcript_data["metadata"] = _extract_basic_metadata(transcript_data["metadata"])

@@ -26,7 +26,6 @@ class Settings(BaseSettings):
     APP_CACHE_TTL_DAYS: int = 30
 
     # Functionality
-    APP_DEFAULT_LANGUAGE: str = "en"
     APP_USE_CACHE_DEFAULT: bool = True
 
     # API Key Authentication

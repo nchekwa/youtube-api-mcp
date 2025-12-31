@@ -19,7 +19,7 @@ def _extract_basic_metadata(metadata: dict) -> dict:
         "publish_date": metadata.get("upload_date", "Unknown"),
         "view_count": metadata.get("view_count", 0),
         "thumbnail": metadata.get("thumbnail"),
-        "description": metadata.get("description") 
+        "description": metadata.get("description")
     }
 
 
@@ -30,7 +30,7 @@ mcp = FastMCP("YouTube Transcript API")
 @mcp.tool()
 def get_youtube_transcript(video_id: str) -> str:
     """
-    Get transcript from a YouTube video.
+    Get transcript from a YouTube video (first available language).
 
     Args:
         video_id: YouTube video ID (11 characters) or full URL (required)
@@ -42,10 +42,8 @@ def get_youtube_transcript(video_id: str) -> str:
         # Extract video ID if full URL provided
         video_id = youtube_service.get_video_id(video_id)
 
-        language = "en"  # Default language
-
         # Check cache first
-        cached = cache_service.get_cached_transcript(video_id, language)
+        cached = cache_service.get_cached_transcript(video_id)
         if cached:
             metadata = cached.get('metadata', {})
             basic_metadata = _extract_basic_metadata(metadata)
@@ -54,19 +52,16 @@ def get_youtube_transcript(video_id: str) -> str:
                    f"Duration: {basic_metadata.get('duration', 'N/A')}s\n" \
                    f"Views: {basic_metadata.get('view_count', 'N/A')}\n" \
                    f"Published: {basic_metadata.get('publish_date', 'N/A')}\n" \
+                   f"Language: {cached.get('language', 'unknown')}\n" \
                    f"Thumbnail: {basic_metadata.get('thumbnail', 'N/A')}\n" \
                    f"Description: {basic_metadata.get('description', 'N/A')}\n\n" \
                    f"Transcript:\n{cached.get('transcript', '')}"
 
-        # Fetch from YouTube (may fallback to different language)
-        transcript_data = youtube_service.fetch_transcript(video_id, language)
+        # Fetch from YouTube (first available transcript)
+        transcript_data = youtube_service.fetch_transcript(video_id)
 
-        # Save to cache using the ACTUAL language fetched (not requested)
-        actual_language = transcript_data.get("language", language)
-        # Check if we already have it cached to prevent unnecessary writes
-        existing_cache = cache_service.get_cached_transcript(video_id, actual_language)
-        if not existing_cache:
-            cache_service.save_transcript(video_id, transcript_data, actual_language)
+        # Save to cache
+        cache_service.save_transcript(video_id, transcript_data)
 
         metadata = transcript_data.get('metadata', {})
         basic_metadata = _extract_basic_metadata(metadata)
@@ -76,6 +71,7 @@ def get_youtube_transcript(video_id: str) -> str:
                f"Duration: {basic_metadata.get('duration', 'N/A')}s\n" \
                f"Views: {basic_metadata.get('view_count', 'N/A')}\n" \
                f"Published: {basic_metadata.get('publish_date', 'N/A')}\n" \
+               f"Language: {transcript_data.get('language', 'unknown')}\n" \
                f"Thumbnail: {basic_metadata.get('thumbnail', 'N/A')}\n" \
                f"Description: {basic_metadata.get('description', 'N/A')}\n\n" \
                f"Transcript:\n{transcript_data.get('transcript', '')}"
@@ -99,10 +95,8 @@ def clear_cache(video_id: str) -> str:
         # Extract video ID if full URL provided
         video_id = youtube_service.get_video_id(video_id)
 
-        language = "en"  # Default language
-
         # Clear cache
-        result = cache_service.clear_cache(video_id, language)
+        result = cache_service.clear_cache(video_id)
 
         if result['success']:
             return f"✓ {result['message']}"
