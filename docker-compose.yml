@@ -11,6 +11,7 @@ services:
     container_name: youtube-api
     <<: *x-logging
     restart: unless-stopped
+    # image: ghcr.io/nchekwa/youtube-api-mcp:latest
     build:
       context: .
       dockerfile: Dockerfile
