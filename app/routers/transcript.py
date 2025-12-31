@@ -43,7 +43,7 @@ async def get_transcript_raw(
 
     **Features:**
     - Extracts video ID from full URL or accepts 11-character ID
-    - Falls back to English if requested language is unavailable
+    - Falls back to first available transcript if requested language is unavailable
     - Caches results locally (30 days TTL)
     - Returns **full metadata** with all yt-dlp fields
 
@@ -88,20 +88,7 @@ async def get_transcript_raw(
                     "metadata": cached.get("metadata", {})
                 }
 
-            # If requested language is not English and no cache found, try English fallback
-            if language != "en":
-                cached = cache_service.get_cached_transcript(video_id, "en")
-                if cached:
-                    return {
-                        "video_id": video_id,
-                        "transcript": cached.get("transcript", ""),
-                        "language": cached.get("language", "en"),
-                        "cache_used": True,
-                        "cached_at": cached.get("cached_at"),
-                        "metadata": cached.get("metadata", {})
-                    }
-
-        # Fetch from YouTube (may fallback to different language)
+        # Fetch from YouTube (may fallback to any available language)
         transcript_data = youtube_service.fetch_transcript(video_id, language)
 
         # Check cache again using the ACTUAL language returned by YouTube
@@ -154,7 +141,7 @@ async def get_transcript(
 
     **Features:**
     - Extracts video ID from full URL or accepts 11-character ID
-    - Falls back to English if requested language is unavailable
+    - Falls back to first available transcript if requested language is unavailable
     - Caches results locally (30 days TTL)
     - Returns basic metadata: title, author, duration, views, publish date, thumbnail, description
 
@@ -195,15 +182,7 @@ async def get_transcript(
                 cached["metadata"] = _extract_basic_metadata(cached["metadata"])
                 return TranscriptResponse(**cached)
 
-            # If requested language is not English and no cache found, try English fallback
-            if language != "en":
-                cached = cache_service.get_cached_transcript(video_id, "en")
-                if cached:
-                    # Extract basic metadata from full metadata in cache
-                    cached["metadata"] = _extract_basic_metadata(cached["metadata"])
-                    return TranscriptResponse(**cached)
-
-        # Fetch from YouTube (may fallback to different language)
+        # Fetch from YouTube (may fallback to any available language)
         transcript_data = youtube_service.fetch_transcript(video_id, language)
 
         # Check cache again using the ACTUAL language returned by YouTube

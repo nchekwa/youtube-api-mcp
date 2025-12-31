@@ -69,12 +69,20 @@ class YouTubeService:
             try:
                 transcript_list = self.api.fetch(video_id, languages=[language])
             except (NoTranscriptFound, VideoUnavailable):
-                # If not found and language is not English, try English as fallback
-                if language != "en":
-                    transcript_list = self.api.fetch(video_id, languages=["en"])
-                    language = "en"  # Update to actual language fetched
+                # If requested language not found, fallback to first available transcript
+                transcript_data = self.api.list(video_id)
+                # Get the first available manually created transcript
+                available = [t for t in transcript_data if not t.is_generated]
+                if not available:
+                    # If no manual transcripts, use generated ones
+                    available = list(transcript_data)
+
+                if available:
+                    first_transcript = available[0]
+                    transcript_list = first_transcript.fetch()
+                    language = first_transcript.language_code
                 else:
-                    raise
+                    raise ValueError(f"No transcript found for video {video_id}")
 
             # Combine transcript text
             transcript_text = " ".join([entry.text for entry in transcript_list])

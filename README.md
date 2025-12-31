@@ -6,7 +6,7 @@ API service to fetch YouTube video transcripts with metadata and local file cach
 
 - 📥 Fetch YouTube video transcripts with metadata
 - 💾 Local file caching with TTL (30 days default)
-- 🌍 Multi-language support with automatic fallback to English
+- 🌍 Multi-language support with automatic fallback to any available transcript
 - 🐳 Docker support
 - 🔌 MCP (Model Context Protocol) server integration
 - 📚 Interactive Swagger documentation
@@ -150,18 +150,18 @@ Returns API information and available endpoints.
 
 ### Language Fallback
 
-When a requested language is unavailable, the API automatically falls back to English:
+When a requested language is unavailable, the API automatically falls back to the first available transcript:
 - Request: `language=pl` (Polish not available)
-- Response: `language=en` with English transcript
-- Cache: Stored as `video_id_en.json`
-- Next request with `language=pl`: Uses cached English version
+- Response: `language=<actual_language>` with available transcript (e.g., `en`, `de`, `pl`, etc.)
+- Cache: Stored as `video_id_<actual_language>.json`
+- Prioritizes: Manual transcripts over auto-generated ones
 
 ### Cache Logic
 
 1. First checks cache for requested language (e.g., `pl`)
-2. If not found and requested language ≠ `en`, checks cache for `en`
-3. If found in cache: Returns cached data with `cache_used: true`
-4. If not in cache: Fetches from YouTube, saves to cache with actual language
+2. If not in cache: Fetches from YouTube with automatic language fallback
+3. Saves to cache using the actual language returned by YouTube
+4. Next request: Returns cached data with `cache_used: true`
 
 ## Documentation
 
