@@ -1,3 +1,5 @@
+import random
+import time
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
     TranscriptsDisabled,
@@ -63,47 +65,74 @@ class YouTubeService:
         Raises:
             ValueError: If video is invalid or transcript not available
         """
-        try:
-            # Get first available transcript (prefers manual over auto-generated)
-            transcript_data = self.api.list(video_id)
+        def _is_transient_network_error(exc: BaseException) -> bool:
+            seen = set()
 
-            # Prefer manually created transcripts
-            available = [t for t in transcript_data if not t.is_generated]
-            if not available:
-                # If no manual transcripts, use generated ones
-                available = list(transcript_data)
+            def _iter_chain(e: BaseException):
+                cur = e
+                while cur is not None and id(cur) not in seen:
+                    seen.add(id(cur))
+                    yield cur
+                    cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
 
-            if not available:
+            for cur in _iter_chain(exc):
+                if isinstance(cur, (ConnectionResetError, TimeoutError)):
+                    return True
+                msg = str(cur)
+                if "Connection reset by peer" in msg:
+                    return True
+                if "Connection aborted" in msg:
+                    return True
+                if "Read timed out" in msg:
+                    return True
+                if "Remote end closed connection" in msg:
+                    return True
+            return False
+
+        attempts = 3
+        base_delay_s = 0.5
+
+        for attempt in range(1, attempts + 1):
+            try:
+                transcript_data = self.api.list(video_id)
+
+                available = [t for t in transcript_data if not t.is_generated]
+                if not available:
+                    available = list(transcript_data)
+
+                if not available:
+                    raise ValueError(f"No transcript found for video {video_id}")
+
+                first_transcript = available[0]
+                transcript_list = first_transcript.fetch()
+                language = first_transcript.language_code
+
+                transcript_text = " ".join([entry.text for entry in transcript_list])
+
+                metadata = self._get_video_metadata(video_id)
+
+                return {
+                    "video_id": video_id,
+                    "transcript": transcript_text,
+                    "language": language,
+                    "cached": False,
+                    "cached_at": None,
+                    "metadata": metadata  # Store full metadata only
+                }
+
+            except TranscriptsDisabled:
+                raise ValueError(f"Transcripts are disabled for video {video_id}")
+            except NoTranscriptFound:
                 raise ValueError(f"No transcript found for video {video_id}")
-
-            # Fetch the first available transcript
-            first_transcript = available[0]
-            transcript_list = first_transcript.fetch()
-            language = first_transcript.language_code
-
-            # Combine transcript text
-            transcript_text = " ".join([entry.text for entry in transcript_list])
-
-            # Get video metadata (full metadata)
-            metadata = self._get_video_metadata(video_id)
-
-            return {
-                "video_id": video_id,
-                "transcript": transcript_text,
-                "language": language,
-                "cached": False,
-                "cached_at": None,
-                "metadata": metadata  # Store full metadata only
-            }
-
-        except TranscriptsDisabled:
-            raise ValueError(f"Transcripts are disabled for video {video_id}")
-        except NoTranscriptFound:
-            raise ValueError(f"No transcript found for video {video_id}")
-        except VideoUnavailable:
-            raise ValueError(f"Video {video_id} is unavailable")
-        except Exception as e:
-            raise ValueError(f"Error fetching transcript: {str(e)}")
+            except VideoUnavailable:
+                raise ValueError(f"Video {video_id} is unavailable")
+            except Exception as e:
+                if attempt < attempts and _is_transient_network_error(e):
+                    delay = base_delay_s * (2 ** (attempt - 1))
+                    delay = delay * (1.0 + random.random() * 0.25)
+                    time.sleep(delay)
+                    continue
+                raise ValueError(f"Error fetching transcript: {str(e)}")
 
     def _get_video_metadata(self, video_id: str) -> dict:
         """
