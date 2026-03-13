@@ -25,7 +25,7 @@ def _format_transcript_result(video_id: str, metadata: dict, direct_data: dict |
     if direct_payload:
         parts.extend([
             "",
-            "[YOUTUBE TRANSCRIPT]",
+            "[TRANSCRIPT FROM YOUTUBE]",
             f"Language: {direct_payload.language}",
             f"Cache used: {direct_payload.cache_used}",
             direct_payload.transcript,
@@ -34,7 +34,7 @@ def _format_transcript_result(video_id: str, metadata: dict, direct_data: dict |
     if audio_payload:
         parts.extend([
             "",
-            "[AUDIO TRANSCRIPT]",
+            "[TRANSCRIPT FROM AUDIO TRACK]",
             f"Language: {audio_payload.language}",
             f"Source: {audio_payload.source}",
             f"Cache used: {audio_payload.cache_used}",
@@ -42,6 +42,21 @@ def _format_transcript_result(video_id: str, metadata: dict, direct_data: dict |
         ])
 
     return "\n".join(parts)
+
+
+def _format_audio_fallback_result(reason: str, transcript_from_audio_status: dict) -> str:
+    message = build_audio_job_message(reason, transcript_from_audio_status)
+    audio_payload = build_audio_transcript_payload(transcript_from_audio_status.get("result"))
+
+    if audio_payload is None:
+        return message
+
+    return "\n".join([
+        message,
+        "",
+        "[TRANSCRIPT FROM AUDIO TRACK]",
+        audio_payload.transcript,
+    ])
 
 
 # Create MCP server
@@ -75,7 +90,7 @@ def get_youtube_transcript(video_id: str) -> str:
         if settings.APP_TRANSCRIPT_FROM_AUDIO and e.transcript_from_audio_allowed:
             container = get_service_container()
             transcript_from_audio_status = container.background_transcription_service.request_transcript(video_id)
-            return build_audio_job_message(e.reason, transcript_from_audio_status)
+            return _format_audio_fallback_result(e.reason, transcript_from_audio_status)
         return f"Error: {e.reason}"
     except Exception as e:
         return f"Error: {str(e)}"
