@@ -56,10 +56,10 @@ class Settings(BaseSettings):
 
     # Cache
     APP_CACHE_DIR: Path = Path("./cache")
-    APP_MAX_CACHE_SIZE_MB: int = 1000
-    APP_CACHE_TTL_DAYS: int = 30
-    APP_JOBS_DIR: Path = Path("./cache/jobs")
-    APP_WORK_DIR: Path = Path("./cache/work")
+    APP_MAX_CACHE_SIZE_MB: int = 0
+    APP_CACHE_TTL_DAYS: int = 0
+    APP_JOBS_DIR: Path = Path("./data/jobs")
+    APP_WORK_DIR: Path = Path("./data/work")
 
     # Functionality
     APP_USE_CACHE_DEFAULT: bool = True

@@ -179,8 +179,8 @@ class CacheService:
                 self._delete_cache_file_if_empty(video_id, payload)
                 return None
 
-            max_age = timedelta(days=settings.APP_CACHE_TTL_DAYS)
-            if datetime.now() - cached_at > max_age:
+            ttl_days = settings.APP_CACHE_TTL_DAYS
+            if ttl_days > 0 and datetime.now() - cached_at > timedelta(days=ttl_days):
                 payload.pop(section_name, None)
                 self._delete_cache_file_if_empty(video_id, payload)
                 return None

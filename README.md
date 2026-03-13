@@ -8,7 +8,7 @@ API service to fetch YouTube video transcripts with metadata and local file cach
 - 🎧 `transcript_from_audio` generation using `yt-dlp` + `ffmpeg` with selectable backend: `faster-whisper`, `assembly`, `openai`, or `gemini`
 - 🧵 Background transcription jobs with progress polling
 - 🪵 Timestamped development logs with visible active log level and transcription backend at startup
-- 💾 Local file caching with TTL (30 days default)
+- 💾 Local file caching with unlimited retention by default
 - 🌍 Always returns first available transcript (native/original language)
 - 🐳 Docker support
 - 🔌 MCP (Model Context Protocol) server integration
@@ -64,7 +64,7 @@ sudo docker-compose up --build
 
 # Or build and run manually
 sudo docker build -t youtube-transcript-api .
-sudo docker run -p 8000:8000 -v $(pwd)/cache:/app/cache youtube-transcript-api
+sudo docker run -p 8000:8000 -v $(pwd)/cache:/app/cache -v $(pwd)/data:/app/data youtube-transcript-api
 ```
 
 ## API Endpoints
@@ -237,7 +237,7 @@ Possible states:
   "video_id": "mQ-y2ZOTpr4",
   "status": "transcribing",
   "current_step": "transcribing",
-  "message": "Transcribing audio with backend 'assembly' from cache/work/mQ-y2ZOTpr4/audio.wav",
+  "message": "Transcribing audio with backend 'assembly' from data/work/mQ-y2ZOTpr4/audio.wav",
   "progress_percent": 70,
   "created_at": "2026-03-12T05:40:00",
   "updated_at": "2026-03-12T05:41:10",
@@ -261,7 +261,7 @@ GET /api/v1/cache
   "cache_path": "./cache",
   "cache_size_bytes": 482102,
   "cache_size_mb": 0.46,
-  "max_cache_size_mb": 1000
+  "max_cache_size_mb": 0
 }
 ```
 
@@ -289,7 +289,7 @@ Requires API key authentication when enabled.
   "cache_size": 1,
   "cache_size_bytes": 20480,
   "cache_size_mb": 0.02,
-  "max_cache_size_mb": 1000
+  "max_cache_size_mb": 0
 }
 ```
 
@@ -334,8 +334,11 @@ The API returns the best available transcript based on YouTube availability and 
 2. If not found, it fetches a transcript from YouTube.
 3. Direct transcripts are stored under `direct_from_youtube`.
 4. Audio transcription results are stored under `transcript_from_audio`.
-5. Cache size is limited by `_APP_MAX_CACHE_SIZE_MB`.
-6. The oldest cache entries are evicted automatically after writes if the size limit is exceeded.
+5. Cached transcript files live under `cache/{video_id}.json`.
+6. By default, `_APP_MAX_CACHE_SIZE_MB=0` keeps cache size unlimited.
+7. By default, `_APP_CACHE_TTL_DAYS=0` disables cache expiration.
+8. Automatic eviction only happens if `_APP_MAX_CACHE_SIZE_MB` is set to a value greater than `0`.
+9. Automatic expiration only happens if `_APP_CACHE_TTL_DAYS` is set to a value greater than `0`.
 
 If `_APP_TRANSCRIPT_FROM_AUDIO=true` and direct transcript fetching fails for an eligible reason, the standard transcript endpoint and MCP `get_youtube_transcript` tool automatically queue or reuse background audio transcription for the same `video_id`.
 
@@ -343,11 +346,13 @@ If `_APP_TRANSCRIPT_FROM_AUDIO=true` and direct transcript fetching fails for an
 
 1. The request endpoint normalizes the input to `video_id`.
 2. It checks `cache/<video_id>.json` for `transcript_from_audio`.
-3. If not cached, it creates or reuses a file-backed background status entry in `cache/jobs/`.
-4. The worker downloads audio with `yt-dlp`.
-5. `ffmpeg` converts audio to mono 16k WAV.
-6. The configured backend generates the final transcript.
-7. The result is stored in cache and exposed through HTTP and MCP polling.
+3. If not cached, it creates or reuses a file-backed background status entry in `data/jobs/`.
+4. The worker uses `data/work/<video_id>/` as temporary workspace.
+5. The worker downloads audio with `yt-dlp`.
+6. `ffmpeg` converts audio to mono 16k WAV.
+7. The configured backend generates the final transcript.
+8. The result is stored in cache and exposed through HTTP and MCP polling.
+9. Temporary work files are removed after processing when `_APP_JOB_CLEANUP_TEMP_FILES=true`.
 
 ## Documentation
 
@@ -487,8 +492,11 @@ Current version: `1.1.0`
 
 Implemented features:
 
-- Cache service with TTL, atomic writes, and max-size eviction
+- Cache service with atomic writes, optional TTL, and optional max-size eviction
 - Direct transcript and audio transcript fallback flows
+- Cache retention defaults to unlimited size and no expiration
+- Background job status files stored under `data/jobs`
+- Background worker temporary files stored under `data/work`
 - Shared service container across REST and MCP
 - REST cache management endpoints
 - Optional CORS middleware
@@ -498,21 +506,37 @@ Implemented features:
 
 ## Cache Structure
 
-Cache files are stored as JSON.
+Runtime data is split between persistent cache entries and background-processing state.
 
 ```text
 cache/
 ├── {video_id}.json
+
+data/
 ├── jobs/
 │   └── {video_id}.json
 └── work/
+    └── {video_id}/
+        ├── source_audio.*
+        └── audio.wav
 ```
 
-Each cache file contains:
+`cache/{video_id}.json` contains:
 
 - `video_id`
 - `direct_from_youtube`
 - `transcript_from_audio`
+
+`data/jobs/{video_id}.json` contains the current background job state, including:
+
+- `status`
+- `current_step`
+- `progress_percent`
+- `message`
+- `error`
+- `result`
+
+`data/work/{video_id}/` contains temporary downloaded and normalized audio files while a background job is running.
 
 ## License
 
