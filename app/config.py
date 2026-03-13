@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # API Paths
     APP_ROOT_PATH: str = ""
     APP_API_PREFIX: str = "/api/v1"
+    APP_CORS_ALLOW_ORIGINS: str = ""
+    APP_CORS_ALLOW_CREDENTIALS: bool = False
+    APP_CORS_ALLOW_METHODS: str = "GET,POST,DELETE,OPTIONS"
+    APP_CORS_ALLOW_HEADERS: str = "*"
 
     # Cache
     APP_CACHE_DIR: Path = Path("./cache")
@@ -91,6 +95,22 @@ class Settings(BaseSettings):
     # System
     APP_LOG_LEVEL: str = "INFO"
     APP_PORT: int = 8000
+
+    @property
+    def api_key_value(self) -> str:
+        return (self.APP_X_API_KEY or self.APP_API_KEY or "").strip()
+
+    @property
+    def cors_allow_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.APP_CORS_ALLOW_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def cors_allow_methods(self) -> list[str]:
+        return [method.strip() for method in self.APP_CORS_ALLOW_METHODS.split(",") if method.strip()]
+
+    @property
+    def cors_allow_headers(self) -> list[str]:
+        return [header.strip() for header in self.APP_CORS_ALLOW_HEADERS.split(",") if header.strip()]
 
 
 settings = Settings()

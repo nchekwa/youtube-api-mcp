@@ -1,5 +1,8 @@
+import asyncio
+import logging
 import random
-import time
+import re
+from collections.abc import Sequence
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
     TranscriptsDisabled,
@@ -14,7 +17,16 @@ except ImportError:
     yt_dlp = None
 
 
-class TranscriptFetchError(ValueError):
+logger = logging.getLogger("uvicorn.error")
+
+VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+class YouTubeServiceError(Exception):
+    """Base exception for YouTube service failures."""
+
+
+class TranscriptFetchError(YouTubeServiceError):
     """Structured failure raised when direct YouTube transcript fetching fails."""
 
     def __init__(self, reason: str, *, transcript_from_audio_allowed: bool):
@@ -43,12 +55,10 @@ class YouTubeService:
         Raises:
             ValueError: If URL/ID is invalid
         """
-        # If it's already a video ID (11 characters)
-        if len(url_or_id) == 11 and not any(c in url_or_id for c in ['/', '.', '?', '&']):
+        if VIDEO_ID_PATTERN.fullmatch(url_or_id):
             return url_or_id
 
         # Extract from various URL formats
-        import re
         patterns = [
             r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)',
             r'youtube\.com\/watch\?.*v=([^&\n?#]+)'
@@ -57,11 +67,39 @@ class YouTubeService:
         for pattern in patterns:
             match = re.search(pattern, url_or_id)
             if match:
-                return match.group(1)
+                candidate = match.group(1)
+                if VIDEO_ID_PATTERN.fullmatch(candidate):
+                    return candidate
+                break
 
         raise ValueError(f"Invalid YouTube URL or ID: {url_or_id}")
 
-    def fetch_transcript(self, video_id: str) -> dict:
+    def compute_retry_delay(self, attempt: int, base_delay_s: float = 0.5) -> float:
+        delay = base_delay_s * (2 ** (attempt - 1))
+        return delay * (1.0 + random.random() * 0.25)
+
+    async def fetch_transcript_async(self, video_id: str, language_preferences: Sequence[str] | None = None) -> dict:
+        attempts = 3
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return await asyncio.to_thread(self.fetch_transcript, video_id, language_preferences)
+            except TranscriptFetchError:
+                raise
+            except Exception as e:
+                if attempt >= attempts:
+                    raise TranscriptFetchError(
+                        f"Error fetching transcript: {str(e)}",
+                        transcript_from_audio_allowed=True,
+                    ) from e
+                delay = self.compute_retry_delay(attempt)
+                logger.warning("Retrying async transcript fetch for %s after attempt %s with delay %.2fs", video_id, attempt, delay)
+                await asyncio.sleep(delay)
+
+    async def get_video_metadata_async(self, video_id: str) -> dict:
+        return await asyncio.to_thread(self.get_video_metadata, video_id)
+
+    def fetch_transcript(self, video_id: str, language_preferences: Sequence[str] | None = None) -> dict:
         """
         Fetch transcript for a YouTube video (first available language).
 
@@ -115,7 +153,20 @@ class YouTubeService:
                         transcript_from_audio_allowed=True,
                     )
 
-                first_transcript = available[0]
+                preferred_languages = [language.strip().lower() for language in (language_preferences or []) if language and language.strip()]
+                first_transcript = None
+                if preferred_languages:
+                    for preferred_language in preferred_languages:
+                        first_transcript = next(
+                            (transcript for transcript in available if transcript.language_code.lower() == preferred_language),
+                            None,
+                        )
+                        if first_transcript is not None:
+                            break
+
+                if first_transcript is None:
+                    first_transcript = available[0]
+
                 transcript_list = first_transcript.fetch()
                 language = first_transcript.language_code
 
@@ -149,9 +200,7 @@ class YouTubeService:
                 )
             except Exception as e:
                 if attempt < attempts and _is_transient_network_error(e):
-                    delay = base_delay_s * (2 ** (attempt - 1))
-                    delay = delay * (1.0 + random.random() * 0.25)
-                    time.sleep(delay)
+                    logger.warning("Retrying transcript fetch for %s after transient error on attempt %s: %s", video_id, attempt, str(e))
                     continue
                 raise TranscriptFetchError(
                     f"Error fetching transcript: {str(e)}",
@@ -219,7 +268,6 @@ class YouTubeService:
                 "filesize": info.get('filesize', 0),
                 "fulltitle": info.get('fulltitle', ''),
                 "duration_string": info.get('duration_string', ''),
-                "upload_date": info.get('upload_date', ''),
                 "uploader_id": info.get('uploader_id', ''),
                 "uploader": info.get('uploader', ''),
                 "uploader_url": info.get('uploader_url', ''),
@@ -235,5 +283,5 @@ class YouTubeService:
 
         except Exception as e:
             # Return empty dict if metadata fetch fails
-            print(f"Error fetching metadata: {e}")
+            logger.exception("Error fetching metadata for %s: %s", video_id, str(e))
             return {}

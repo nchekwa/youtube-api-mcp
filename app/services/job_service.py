@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 import json
+import os
+import tempfile
+import threading
 
 from app.config import settings
 
@@ -17,12 +20,28 @@ class JobService:
     def __init__(self, jobs_dir: Path | None = None):
         self.jobs_dir = jobs_dir or settings.APP_JOBS_DIR
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self._lock_registry_guard = threading.Lock()
+        self._locks: dict[str, threading.Lock] = {}
 
     def _get_job_file_path(self, video_id: str) -> Path:
         return self.jobs_dir / f"{video_id}.json"
 
-    def get_job(self, video_id: str) -> dict | None:
-        path = self._get_job_file_path(video_id)
+    def _get_lock(self, video_id: str) -> threading.Lock:
+        with self._lock_registry_guard:
+            lock = self._locks.get(video_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[video_id] = lock
+            return lock
+
+    def _atomic_write_json(self, path: Path, payload: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp_file:
+            json.dump(payload, tmp_file, ensure_ascii=False, indent=2)
+            tmp_path = Path(tmp_file.name)
+        os.replace(tmp_path, path)
+
+    def _read_job_unlocked(self, path: Path) -> dict | None:
         if not path.exists():
             return None
 
@@ -31,6 +50,11 @@ class JobService:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
             return None
+
+    def get_job(self, video_id: str) -> dict | None:
+        path = self._get_job_file_path(video_id)
+        with self._get_lock(video_id):
+            return self._read_job_unlocked(path)
 
     def create_or_replace_job(self, *, video_id: str, backend: str, model: str) -> dict:
         now = datetime.now().isoformat()
@@ -47,18 +71,20 @@ class JobService:
             "error": None,
             "result": None,
         }
-        self._write_job(video_id, data)
+        with self._get_lock(video_id):
+            self._write_job(video_id, data)
         return data
 
     def update_job(self, video_id: str, **updates) -> dict:
-        current = self.get_job(video_id)
-        if current is None:
-            raise ValueError(f"Background transcription status for video {video_id} not found")
+        with self._get_lock(video_id):
+            current = self._read_job_unlocked(self._get_job_file_path(video_id))
+            if current is None:
+                raise ValueError(f"Background transcription status for video {video_id} not found")
 
-        current.update(updates)
-        current["updated_at"] = datetime.now().isoformat()
-        self._write_job(video_id, current)
-        return current
+            current.update(updates)
+            current["updated_at"] = datetime.now().isoformat()
+            self._write_job(video_id, current)
+            return current
 
     def mark_stale_jobs_failed(self) -> None:
         ttl = timedelta(days=settings.APP_JOB_POLL_TTL_DAYS)
@@ -94,5 +120,4 @@ class JobService:
         self._write_raw(self._get_job_file_path(video_id), data)
 
     def _write_raw(self, path: Path, data: dict) -> None:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        self._atomic_write_json(path, data)

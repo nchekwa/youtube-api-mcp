@@ -12,7 +12,7 @@ _header_name = getattr(settings, "APP_X_API_KEY_HEADER", "X-API-Key")
 api_key_header = APIKeyHeader(name=_header_name, auto_error=False)
 
 # Parse API key(s) from settings - supports comma-separated list
-_env_api_key = getattr(settings, "APP_X_API_KEY", None)
+_env_api_key = settings.api_key_value
 
 if _env_api_key and "," in _env_api_key:
     # Multiple keys: split by comma and strip whitespace
@@ -24,8 +24,8 @@ else:
 async def verify_api_key(api_key: Optional[str] = Security(api_key_header)):
     """
     Dependency to verify API key.
-    Supports multiple API keys (comma-separated in _APP_X_API_KEY env var).
-    If _APP_X_API_KEY is not set, authentication is disabled.
+    Supports multiple API keys (comma-separated in APP_X_API_KEY or APP_API_KEY env var).
+    If no API key is configured, authentication is disabled.
     """
     if API_KEYS:
         if not api_key:
@@ -85,7 +85,7 @@ def parse_api_keys(value: str | None) -> Union[List[str], str, None]:
 
 
 def build_mcp_middleware_from_settings():
-    api_keys = parse_api_keys(getattr(settings, "APP_X_API_KEY", ""))
+    api_keys = parse_api_keys(settings.api_key_value)
     if not api_keys:
         return None
 

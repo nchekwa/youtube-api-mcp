@@ -75,47 +75,51 @@ sudo docker run -p 8000:8000 -v $(pwd)/cache:/app/cache youtube-transcript-api
 GET /api/v1/health
 ```
 
-Returns cache statistics and service health.
+Returns application health and runtime information.
 
 **Response:**
+
 ```json
 {
   "status": "healthy",
-  "cache_size": 42,
-  "cache_path": "/app/cache"
+  "version": "1.1.0",
+  "uptime_seconds": 12.34,
+  "transcription_backend": "faster-whisper",
+  "transcript_from_audio_enabled": true,
+  "cache_path": "/app/cache",
+  "cache_accessible": true,
+  "whisper_model_loaded": false
 }
 ```
 
 ### 2. Get Transcript with Basic Metadata
 
 ```bash
-GET /api/v1/youtube/transcript/{video_id}?use_cache=true
+GET /api/v1/youtube/transcript/{video_id}?use_cache=true&force_refresh=false&language=en
 ```
 
 When `_APP_TRANSCRIPT_FROM_AUDIO=true`, this endpoint can automatically queue `transcript_from_audio` processing if direct YouTube transcript fetch fails for reasons such as disabled transcripts or YouTube-side access issues. `Video unavailable` remains a hard error.
 
 **Parameters:**
+
 - `video_id` (path): YouTube video ID (11 chars) or full URL
   - Examples: `mQ-y2ZOTpr4` or `https://www.youtube.com/watch?v=mQ-y2ZOTpr4`
-- `use_cache` (query): Enable/disable cache (default: `true`)
+- `use_cache` (query): Enable or disable cache lookup for direct YouTube transcripts
+- `force_refresh` (query): Skip direct transcript cache lookup and overwrite the direct cache section
+- `language` (query): Preferred transcript language code (optional)
 
-**Returns basic metadata (7 fields):**
-- `title` - Video title
-- `author` - Channel/author name
-- `duration` - Duration in seconds
-- `publish_date` - Upload date (YYYY-MM-DD)
-- `view_count` - Number of views
-- `thumbnail` - URL to video thumbnail (can be null)
-- `description` - Full video description (can be null)
+**Returns:**
+
+- `metadata` - Basic video metadata
+- `transcript_youtube` - Direct transcript fetched from YouTube
+- `transcript_audio` - Transcript generated from the audio track if available
+- `source_preference` - Response source ordering metadata
 
 **Response:**
+
 ```json
 {
   "video_id": "mQ-y2ZOTpr4",
-  "transcript": "Full transcript text here...",
-  "language": "en",
-  "cache_used": false,
-  "cached_at": null,
   "metadata": {
     "title": "Video Title",
     "author": "Channel Name",
@@ -124,11 +128,21 @@ When `_APP_TRANSCRIPT_FROM_AUDIO=true`, this endpoint can automatically queue `t
     "view_count": 9084,
     "thumbnail": "https://i.ytimg.com/vi/...",
     "description": "Full description..."
-  }
+  },
+  "transcript_youtube": {
+    "transcript": "Full transcript text here...",
+    "language": "en",
+    "source": "youtube",
+    "cache_used": false,
+    "cached_at": null
+  },
+  "transcript_audio": null,
+  "source_preference": ["youtube", "audio"]
 }
 ```
 
-**Transcript_from_audio response when direct transcript fetch fails and `_APP_TRANSCRIPT_FROM_AUDIO=true`:**
+**Fallback response when direct transcript fetching queues audio transcription:**
+
 ```json
 {
   "video_id": "3LbZP0sYmPw",
@@ -140,45 +154,42 @@ When `_APP_TRANSCRIPT_FROM_AUDIO=true`, this endpoint can automatically queue `t
 }
 ```
 
-**Example:**
-```bash
-curl "http://localhost:8000/api/v1/youtube/transcript/mQ-y2ZOTpr4"
-```
-
 ### 3. Get Transcript with Full Metadata
 
 ```bash
-GET /api/v1/youtube/transcript/raw/{video_id}?use_cache=true
+GET /api/v1/youtube/transcript/raw/{video_id}?use_cache=true&force_refresh=false&language=en
 ```
 
-Returns **complete yt-dlp metadata** (50+ fields) including:
-- Basic: title, author, duration, views, upload date
-- Engagement: likes, comments
-- Media: description, thumbnails, categories, tags
-- Technical: resolution, codecs, format, filesize
-- Channel: channel_id, subscribers, location
-- Subtitles: available and auto-generated captions
+Returns complete `yt-dlp` metadata together with separated transcript payloads.
 
-**Example:**
-```bash
-curl "http://localhost:8000/api/v1/youtube/transcript/raw/mQ-y2ZOTpr4"
+**Response:**
+
+```json
+{
+  "video_id": "mQ-y2ZOTpr4",
+  "metadata": {
+    "title": "Video Title",
+    "channel_id": "UC123..."
+  },
+  "transcript_youtube": {
+    "transcript": "Full transcript text here...",
+    "language": "en",
+    "source": "youtube",
+    "cache_used": true,
+    "cached_at": "2026-03-13T12:34:56"
+  },
+  "transcript_audio": null,
+  "source_preference": ["youtube", "audio"]
+}
 ```
 
-### 4. Root Endpoint
-
-```bash
-GET /
-```
-
-Returns API information and available endpoints.
-
-### 5. Queue Local Audio Transcription
+### 4. Queue Audio Transcription
 
 ```bash
 POST /api/v1/youtube/audio-transcript/{video_id}
 ```
 
-Queues background transcription for the provided `video_id`, downloads the video's audio track, normalizes it with `ffmpeg`, transcribes it with the configured backend, and stores the result under `transcript_from_audio` in cache.
+Queues background transcription for the provided `video_id`, downloads the audio track, normalizes it with `ffmpeg`, transcribes it with the configured backend, and stores the result under `transcript_from_audio` in cache.
 
 Supported backends:
 
@@ -188,6 +199,7 @@ Supported backends:
 - `gemini`
 
 **Response:**
+
 ```json
 {
   "status": "queued",
@@ -198,15 +210,16 @@ Supported backends:
 }
 ```
 
-If `transcript_from_audio` already exists in cache, the endpoint returns `completed` and includes the cached result immediately.
-
-### 6. Check Background Transcription Status
+### 5. Check Background Transcription Status
 
 ```bash
 GET /api/v1/youtube/audio-transcript/{video_id}
 ```
 
-Returns the current background transcription state with step-level progress:
+Returns the current background transcription state with step-level progress.
+
+Possible states:
+
 - `queued`
 - `downloading_audio`
 - `extracting_audio`
@@ -218,6 +231,7 @@ Returns the current background transcription state with step-level progress:
 - `failed`
 
 **Response:**
+
 ```json
 {
   "video_id": "mQ-y2ZOTpr4",
@@ -232,61 +246,129 @@ Returns the current background transcription state with step-level progress:
 }
 ```
 
+### 6. Cache Status
+
+```bash
+GET /api/v1/cache
+```
+
+**Response:**
+
+```json
+{
+  "status": "healthy",
+  "cache_size": 12,
+  "cache_path": "./cache",
+  "cache_size_bytes": 482102,
+  "cache_size_mb": 0.46,
+  "max_cache_size_mb": 1000
+}
+```
+
+### 7. List Cache Entries
+
+```bash
+GET /api/v1/cache/entries
+```
+
+Requires API key authentication when enabled.
+
+**Response:**
+
+```json
+{
+  "status": "healthy",
+  "entries": [
+    {
+      "video_id": "mQ-y2ZOTpr4",
+      "file_name": "mQ-y2ZOTpr4.json",
+      "size_bytes": 20480,
+      "updated_at": "2026-03-13T20:00:00"
+    }
+  ],
+  "cache_size": 1,
+  "cache_size_bytes": 20480,
+  "cache_size_mb": 0.02,
+  "max_cache_size_mb": 1000
+}
+```
+
+### 8. Clear All Cache Entries
+
+```bash
+DELETE /api/v1/cache
+```
+
+Requires API key authentication when enabled.
+
+### 9. Clear Cache Entry By Video ID
+
+```bash
+DELETE /api/v1/cache/{video_id}
+```
+
+Requires API key authentication when enabled.
+
+### 10. Root Endpoint
+
+```bash
+GET /
+```
+
+Returns API information and available endpoints.
+
 ## Behavior
 
 ### Language Handling
 
-The API always returns the **first available transcript** (usually the native/original language):
-- Prefers: Manual transcripts over auto-generated ones
-- No language parameter needed
-- Response includes `language` field to indicate which language was returned
-- Cache: Stored as `video_id.json` (one file per video)
+The API returns the best available transcript based on YouTube availability and your optional preferred language.
+
+- Prefers manual transcripts over auto-generated ones
+- Optional `language` query parameter can be used as a preferred transcript language hint
+- Response separates direct and audio transcript payloads instead of concatenating them
+- Cache is stored as `video_id.json` with separate sections for direct and audio transcripts
 
 ### Cache Logic
 
-1. First checks cache for video ID
-2. If not in cache: Fetches from YouTube (first available transcript)
-3. Saves to cache as `<video_id>.json` under `direct_from_youtube`
-4. Next request: Returns cached data with `cache_used: true`
-5. If `transcript_from_audio` also exists in the same cache file, the standard transcript response keeps the direct transcript first and appends an extra `[TRANSCRIPT FROM AUDIO TRACK]` section below it
+1. The API first checks cache by `video_id`.
+2. If not found, it fetches a transcript from YouTube.
+3. Direct transcripts are stored under `direct_from_youtube`.
+4. Audio transcription results are stored under `transcript_from_audio`.
+5. Cache size is limited by `_APP_MAX_CACHE_SIZE_MB`.
+6. The oldest cache entries are evicted automatically after writes if the size limit is exceeded.
 
-If `_APP_TRANSCRIPT_FROM_AUDIO=true` and direct transcript fetch fails for a transcript_from_audio-eligible reason, the standard transcript endpoint and MCP `get_youtube_transcript` tool automatically queue or reuse background audio transcription for the same `video_id`.
+If `_APP_TRANSCRIPT_FROM_AUDIO=true` and direct transcript fetching fails for an eligible reason, the standard transcript endpoint and MCP `get_youtube_transcript` tool automatically queue or reuse background audio transcription for the same `video_id`.
 
 ### Transcript From Audio Logic
 
-1. The transcript_from_audio request endpoint normalizes the input to `video_id`
-2. It checks `cache/<video_id>.json` for `transcript_from_audio`
-3. If not cached, it creates or reuses a file-backed background status entry in `cache/jobs/`, keyed by `video_id`
-4. The worker downloads audio with `yt-dlp`
-5. `ffmpeg` converts audio to a mono 16k WAV file suitable for transcription backends
-6. The configured backend generates the final transcript:
-   - `faster-whisper` runs locally
-   - `assembly` uploads audio and polls AssemblyAI
-   - `openai` sends audio to the OpenAI transcription API
-   - `gemini` uploads audio and requests structured transcription output
-7. Result is stored in `cache/<video_id>.json` under `transcript_from_audio` and exposed through HTTP and MCP polling
-8. If `transcript_from_audio` already exists in `cache/<video_id>.json`, a new audio transcription job is not created again for that video
-9. Logs include the active backend and the working file paths used during processing
+1. The request endpoint normalizes the input to `video_id`.
+2. It checks `cache/<video_id>.json` for `transcript_from_audio`.
+3. If not cached, it creates or reuses a file-backed background status entry in `cache/jobs/`.
+4. The worker downloads audio with `yt-dlp`.
+5. `ffmpeg` converts audio to mono 16k WAV.
+6. The configured backend generates the final transcript.
+7. The result is stored in cache and exposed through HTTP and MCP polling.
 
 ## Documentation
 
-Interactive API documentation available at:
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+Interactive API documentation is available at:
+
+- [Swagger UI](http://localhost:8000/docs)
+- [ReDoc](http://localhost:8000/redoc)
 
 ## MCP Server
 
-MCP (Model Context Protocol) server is integrated with FastAPI and supports **StreamableHttpTransport** (recommended for production).
+MCP (Model Context Protocol) server is integrated with FastAPI and supports `StreamableHttpTransport`.
 
-Set `_APP_MCP_HIDE_CLEAR_CACHE=true` to hide the `clear_cache` tool from the MCP tools list. By default it remains visible.
+Set `_APP_MCP_HIDE_CLEAR_CACHE=true` to hide the `clear_cache` tool from the MCP tools list.
 
 - **MCP Endpoint**: `http://localhost:8000/api/v1/mcp`
-- **Transport**: StreamableHttpTransport (efficient bidirectional streaming over HTTP)
+- **Transport**: `streamable_http`
 - **Tools**:
-  - `get_youtube_transcript` - Fetch transcript with basic metadata from YouTube video (first available language)
-  - `request_youtube_audio_transcript` - Queue transcript_from_audio generation using the configured backend unless `transcript_from_audio` already exists in `cache/<video_id>.json`
-  - `get_youtube_audio_transcript` - Poll background transcription status/result by `video_id`
-  - `clear_cache` - Clear the shared cached transcript file for a specific video, including `direct_from_youtube` and `transcript_from_audio` sections stored in `<video_id>.json` (visible by default, hidden when `_APP_MCP_HIDE_CLEAR_CACHE=true`)
+  - `get_youtube_transcript`
+  - `request_youtube_audio_transcript`
+  - `get_youtube_audio_transcript`
+  - `clear_cache`
 
 ### MCP Tool Example
 
@@ -296,32 +378,14 @@ from mcp.client.streamable_http import streamable_http_transport
 
 async with streamable_http_transport("http://localhost:8000/api/v1/mcp") as transport:
     async with ClientSession(transport) as session:
-        # Initialize connection
         await session.initialize()
-
-        # List available tools
-        tools = await session.list_tools()
-
-        # Get transcript
-        result = await session.call_tool(
+        await session.call_tool(
             "get_youtube_transcript",
-            arguments={"video_id": "9Wg6tiaar9M"}
-        )
-
-        # Queue transcript_from_audio generation
-        result = await session.call_tool(
-            "request_youtube_audio_transcript",
-            arguments={"video_id": "9Wg6tiaar9M"}
-        )
-
-        # Poll status by the same video_id
-        result = await session.call_tool(
-            "get_youtube_audio_transcript",
-            arguments={"video_id": "9Wg6tiaar9M"}
+            arguments={"video_id": "9Wg6tiaar9M"},
         )
 ```
 
-### MCP Config (for IDEs)
+### MCP Config for IDEs
 
 ```json
 {
@@ -336,63 +400,18 @@ async with streamable_http_transport("http://localhost:8000/api/v1/mcp") as tran
 
 ## Configuration
 
-All environment variables must have `_APP_` prefix. Create `.env` file from `.env.example`:
+All environment variables use the `_APP_` prefix. Copy `.env.example` to `.env` and adjust values for your environment.
 
-```bash
-# ======================
-# API PATHS
-# ======================
-_APP_ROOT_PATH=                           # Root path for API (default: empty string)
-_APP_API_PREFIX=/api/v1                   # API prefix for all endpoints (default: /api/v1)
+Key groups:
 
-# ======================
-# CACHE CONFIGURATION
-# ======================
-_APP_CACHE_DIR=./cache                    # Directory for cache storage (default: ./cache)
-_APP_MAX_CACHE_SIZE_MB=1000               # Maximum cache size in megabytes (default: 1000)
-_APP_CACHE_TTL_DAYS=30                    # Cache time-to-live in days (default: 30)
-_APP_JOBS_DIR=./cache/jobs                # Directory for background transcription status JSON files keyed by video_id
-_APP_WORK_DIR=./cache/work                # Directory for temporary audio work files
+- API paths and CORS
+- Cache, jobs, and work directories
+- Transcript and audio fallback behavior
+- Provider/backend configuration
+- Optional API key authentication
+- Logging and port binding
 
-# ======================
-# FUNCTIONALITY
-# ======================
-_APP_USE_CACHE_DEFAULT=true               # Enable caching by default (default: true)
-_APP_TRANSCRIPT_FROM_AUDIO=false          # Auto-queue transcript_from_audio processing when direct YouTube transcript fetch fails
-_APP_BACKGROUND_JOB_CONCURRENCY=1         # Number of concurrent background transcription workers
-_APP_JOB_POLL_TTL_DAYS=7                  # Days to retain old background transcription status files
-_APP_JOB_CLEANUP_TEMP_FILES=true          # Remove temp audio files after processing
-
-# ======================
-# TRANSCRIPTION
-# ======================
-_APP_TRANSCRIPTION_BACKEND=faster-whisper # Backend: faster-whisper|assembly|openai|gemini
-_APP_WHISPER_MODEL=large-v3               # Whisper model name for faster-whisper
-_APP_WHISPER_DEVICE=cpu                   # Device: cpu or cuda
-_APP_WHISPER_COMPUTE_TYPE=int8            # Compute type for faster-whisper
-_APP_YTDLP_SOCKET_TIMEOUT_SECONDS=120     # yt-dlp socket timeout in seconds
-_APP_FFMPEG_AUDIO_RATE=16000              # Output WAV sample rate
-_APP_FFMPEG_AUDIO_CHANNELS=1              # Output WAV channel count
-_APP_TRANSCRIPTION_PROVIDER_TIMEOUT_SECONDS=1800 # Timeout for external transcription providers in seconds
-_APP_TRANSCRIPTION_PROVIDER_POLL_SECONDS=3       # Poll interval for asynchronous providers in seconds
-_APP_API_KEY=                              # API key for selected external backend
-_APP_BASE_URL=                             # Base URL for selected external backend
-_APP_MODEL=                                # Model for selected backend (AssemblyAI accepts CSV, e.g. universal-3-pro,universal-2)
-_APP_LANGUAGE_DETECTION=true               # Language detection flag for selected backend
-_APP_GEMINI_TRANSCRIPTION_PROMPT=Transcribe this audio verbatim. Return JSON with keys 'transcript' and 'language'.
-
-# ======================
-# API KEY AUTHENTICATION
-# ======================
-_APP_X_API_KEY=                           # API key for authentication (leave empty to disable)
-_APP_X_API_KEY_HEADER=X-API-Key           # HTTP header name for API key (default: X-API-Key)
-
-# ======================
-# SYSTEM
-# ======================
-_APP_LOG_LEVEL=INFO                       # Logging level: DEBUG|INFO|WARNING|ERROR|CRITICAL (default: INFO)
-_APP_PORT=8000                            # Server port number (default: 8000)
-```
+`_APP_API_KEY` is used for external provider authentication. `_APP_X_API_KEY` enables API access control for incoming HTTP and MCP requests.
 
 ### Backend Examples
 
@@ -435,52 +454,53 @@ _APP_MODEL=gemini-2.5-flash
 
 ## Architecture
 
-```
+```text
 app/
-├── main.py                 # FastAPI application setup
-├── config.py               # Configuration with Pydantic Settings
-├── models.py               # Pydantic models (TranscriptResponse, HealthResponse)
+├── main.py
+├── config.py
+├── models.py
 ├── middleware/
-│   ├── auth.py            # API key authentication
-│   └── process_time.py    # Request timing middleware
+│   ├── auth.py
+│   └── process_time.py
 ├── routers/
-│   ├── transcript.py     # Primary transcript endpoints
-│   └── transcript_from_audio.py # Background transcript_from_audio endpoints
+│   ├── transcript.py
+│   └── transcript_from_audio.py
 ├── services/
-│   ├── cache_service.py   # Cache management (read, write, TTL)
-│   ├── transcript_from_audio_cache_service.py # Transcript_from_audio cache access
-│   ├── job_service.py     # File-backed job registry
-│   ├── background_transcription_service.py # Audio download/extract/transcribe pipeline orchestration
-│   ├── transcription_backend_service.py # Backend dispatch for faster-whisper, AssemblyAI, OpenAI, Gemini
-│   └── youtube_service.py # YouTube integration (yt-dlp)
+│   ├── background_transcription_service.py
+│   ├── cache_service.py
+│   ├── job_service.py
+│   ├── service_container.py
+│   ├── transcription_backend_service.py
+│   ├── transcript_from_audio_cache_service.py
+│   └── youtube_service.py
+├── utils/
+│   └── transcript_utils.py
 └── mcp/
-    └── server.py          # MCP server with tools
+    └── server.py
 ```
 
 ## Development
 
 ### Project Status
 
-Current version: 1.0.0
+Current version: `1.1.0`
 
-All features implemented:
-- ✅ Cache service (init, read, write, size tracking, TTL)
-- ✅ YouTube service (fetch transcript, full metadata, first available language)
-- ✅ API endpoints (transcript, raw, health)
-- ✅ Rate limiting (30 req/min default)
-- ✅ Docker configuration
-- ✅ MCP server integration
-- ✅ Background transcript_from_audio processing with progress polling
-- ✅ Selectable transcription backends: faster-whisper, AssemblyAI, OpenAI, Gemini
-- ✅ Timestamped development logging with visible active backend and log level
-- ✅ API key authentication (optional)
-- ✅ Environment variables with `_APP_` prefix
-- ✅ Full Swagger/OpenAPI documentation
+Implemented features:
+
+- Cache service with TTL, atomic writes, and max-size eviction
+- Direct transcript and audio transcript fallback flows
+- Shared service container across REST and MCP
+- REST cache management endpoints
+- Optional CORS middleware
+- Optional API key authentication
+- Docker and Compose support
+- Swagger and ReDoc documentation
 
 ## Cache Structure
 
-Cache files are stored as JSON:
-```
+Cache files are stored as JSON.
+
+```text
 cache/
 ├── {video_id}.json
 ├── jobs/
@@ -489,9 +509,10 @@ cache/
 ```
 
 Each cache file contains:
-- `video_id` - YouTube video ID
-- `direct_from_youtube` - Cached direct transcript payload from YouTube
-- `transcript_from_audio` - Cached transcript payload generated from the audio track
+
+- `video_id`
+- `direct_from_youtube`
+- `transcript_from_audio`
 
 ## License
 

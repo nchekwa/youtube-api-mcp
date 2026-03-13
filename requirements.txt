@@ -6,7 +6,6 @@ pydantic-settings>=2.12.0
 httpx>=0.28.1
 
 # YouTube integration
-langchain-community
 youtube-transcript-api>=0.128.0
 yt-dlp>=2025.12.8
 faster-whisper>=1.1.1

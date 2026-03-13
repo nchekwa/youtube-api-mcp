@@ -2,7 +2,6 @@ FROM python:3.12-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
@@ -24,11 +23,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Metadata
 LABEL org.opencontainers.image.title="YouTube Transcript API"
 LABEL org.opencontainers.image.description="FastAPI service with MCP integration to fetch YouTube video transcripts with metadata and caching"
-LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.version="1.1.0"
 LABEL org.opencontainers.image.source="https://github.com/nchekwa/youtube-api-mcp"
 
 # Healthcheck using /api/v1/health endpoint
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
     CMD curl -f http://localhost:${_APP_PORT:-8000}/api/v1/health || exit 1
 
 # Use environment variables for host and port

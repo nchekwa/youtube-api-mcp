@@ -1,53 +1,47 @@
 from fastmcp import FastMCP
+
 from app.config import settings
-from starlette.middleware import Middleware
-from app.middleware.auth import MCPAPIKeyMiddleware, build_mcp_middleware_from_settings
-from app.services.background_transcription_service import BackgroundTranscriptionService
-from app.services.youtube_service import YouTubeService
+from app.services.service_container import get_service_container
 from app.services.youtube_service import TranscriptFetchError
-from app.services.cache_service import CacheService
-from app.services.transcript_from_audio_cache_service import TranscriptFromAudioCacheService
-
-# Initialize services
-youtube_service = YouTubeService()
-cache_service = CacheService()
-transcript_from_audio_cache_service = TranscriptFromAudioCacheService()
-background_transcription_service = BackgroundTranscriptionService()
+from app.utils.transcript_utils import build_audio_job_message, build_audio_transcript_payload, build_direct_transcript_payload, extract_basic_metadata
 
 
-def _extract_basic_metadata(metadata: dict) -> dict:
-    """Extract basic fields from full metadata."""
-    return {
-        "title": metadata.get("title", "Unknown"),
-        "author": metadata.get("author", "Unknown"),
-        "duration": metadata.get("duration", 0),
-        "publish_date": metadata.get("upload_date", "Unknown"),
-        "view_count": metadata.get("view_count", 0),
-        "thumbnail": metadata.get("thumbnail"),
-        "description": metadata.get("description")
-    }
+def _format_transcript_result(video_id: str, metadata: dict, direct_data: dict | None, audio_data: dict | None) -> str:
+    basic_metadata = extract_basic_metadata(metadata)
+    direct_payload = build_direct_transcript_payload(direct_data)
+    audio_payload = build_audio_transcript_payload(audio_data)
 
+    parts = [
+        f"Video ID: {video_id}",
+        f"Title: {basic_metadata.title}",
+        f"Author: {basic_metadata.author}",
+        f"Duration: {basic_metadata.duration}s",
+        f"Views: {basic_metadata.view_count}",
+        f"Published: {basic_metadata.publish_date}",
+        f"Thumbnail: {basic_metadata.thumbnail or 'N/A'}",
+        f"Description: {basic_metadata.description or 'N/A'}",
+    ]
 
-def _build_transcript_from_audio_message(reason: str, transcript_from_audio_status: dict) -> str:
-    status = transcript_from_audio_status.get("status", "queued")
-    video_id = transcript_from_audio_status.get("video_id", "unknown")
-    background_message = transcript_from_audio_status.get("message", "Background transcript_from_audio processing was queued.")
-    suffix = "The transcript should be available in a few minutes." if status != "completed" else "A transcript_from_audio result is already available."
-    return (
-        f"Direct YouTube transcript fetch failed: {reason}.\n"
-        f"Transcript_from_audio status for video_id {video_id}: {status}.\n"
-        f"Background transcription message: {background_message}.\n"
-        f"Progress: {transcript_from_audio_status.get('progress_percent', 0)}%\n"
-        f"{suffix}\n"
-        f"Check status by the same video_id."
-    )
+    if direct_payload:
+        parts.extend([
+            "",
+            "[YOUTUBE TRANSCRIPT]",
+            f"Language: {direct_payload.language}",
+            f"Cache used: {direct_payload.cache_used}",
+            direct_payload.transcript,
+        ])
 
+    if audio_payload:
+        parts.extend([
+            "",
+            "[AUDIO TRANSCRIPT]",
+            f"Language: {audio_payload.language}",
+            f"Source: {audio_payload.source}",
+            f"Cache used: {audio_payload.cache_used}",
+            audio_payload.transcript,
+        ])
 
-def _merge_direct_and_audio_transcripts(direct_transcript: str, audio_cached: dict | None) -> str:
-    if not audio_cached or not audio_cached.get("transcript"):
-        return direct_transcript
-
-    return f"{direct_transcript}\n\n[TRANSCRIPT FROM AUDIO TRACK]\n{audio_cached.get('transcript', '')}"
+    return "\n".join(parts)
 
 
 # Create MCP server
@@ -66,49 +60,22 @@ def get_youtube_transcript(video_id: str) -> str:
         Formatted transcript with basic metadata: title, author, duration, views, publish date, thumbnail, description
     """
     try:
-        # Extract video ID if full URL provided
-        video_id = youtube_service.get_video_id(video_id)
+        container = get_service_container()
+        video_id = container.youtube_service.get_video_id(video_id)
 
-        # Check cache first
-        cached = cache_service.get_cached_transcript(video_id)
-        if cached:
-            audio_cached = transcript_from_audio_cache_service.get_cached_transcript(video_id)
-            metadata = cached.get('metadata', {})
-            basic_metadata = _extract_basic_metadata(metadata)
-            return f"[CACHED] Title: {basic_metadata.get('title', 'Unknown')}\n" \
-                   f"Author: {basic_metadata.get('author', 'Unknown')}\n" \
-                   f"Duration: {basic_metadata.get('duration', 'N/A')}s\n" \
-                   f"Views: {basic_metadata.get('view_count', 'N/A')}\n" \
-                   f"Published: {basic_metadata.get('publish_date', 'N/A')}\n" \
-                   f"Language: {cached.get('language', 'unknown')}\n" \
-                   f"Thumbnail: {basic_metadata.get('thumbnail', 'N/A')}\n" \
-                   f"Description: {basic_metadata.get('description', 'N/A')}\n\n" \
-                   f"Transcript:\n{_merge_direct_and_audio_transcripts(cached.get('transcript', ''), audio_cached)}"
+        direct_data = container.cache_service.get_cached_transcript(video_id)
+        if direct_data is None:
+            direct_data = container.youtube_service.fetch_transcript(video_id)
+            container.cache_service.save_transcript(video_id, direct_data)
 
-        # Fetch from YouTube (first available transcript)
-        transcript_data = youtube_service.fetch_transcript(video_id)
-
-        # Save to cache
-        cache_service.save_transcript(video_id, transcript_data)
-
-        audio_cached = transcript_from_audio_cache_service.get_cached_transcript(video_id)
-        metadata = transcript_data.get('metadata', {})
-        basic_metadata = _extract_basic_metadata(metadata)
-
-        return f"Title: {basic_metadata.get('title', 'Unknown')}\n" \
-               f"Author: {basic_metadata.get('author', 'Unknown')}\n" \
-               f"Duration: {basic_metadata.get('duration', 'N/A')}s\n" \
-               f"Views: {basic_metadata.get('view_count', 'N/A')}\n" \
-               f"Published: {basic_metadata.get('publish_date', 'N/A')}\n" \
-               f"Language: {transcript_data.get('language', 'unknown')}\n" \
-               f"Thumbnail: {basic_metadata.get('thumbnail', 'N/A')}\n" \
-               f"Description: {basic_metadata.get('description', 'N/A')}\n\n" \
-               f"Transcript:\n{_merge_direct_and_audio_transcripts(transcript_data.get('transcript', ''), audio_cached)}"
+        audio_data = container.transcript_from_audio_cache_service.get_cached_transcript(video_id)
+        return _format_transcript_result(video_id, direct_data.get("metadata", {}), direct_data, audio_data)
 
     except TranscriptFetchError as e:
         if settings.APP_TRANSCRIPT_FROM_AUDIO and e.transcript_from_audio_allowed:
-            transcript_from_audio_status = background_transcription_service.request_transcript(video_id)
-            return _build_transcript_from_audio_message(e.reason, transcript_from_audio_status)
+            container = get_service_container()
+            transcript_from_audio_status = container.background_transcription_service.request_transcript(video_id)
+            return build_audio_job_message(e.reason, transcript_from_audio_status)
         return f"Error: {e.reason}"
     except Exception as e:
         return f"Error: {str(e)}"
@@ -126,7 +93,8 @@ def request_youtube_audio_transcript(video_id: str) -> str:
         Current background transcription status or completed transcript_from_audio result
     """
     try:
-        result = background_transcription_service.request_transcript(video_id)
+        container = get_service_container()
+        result = container.background_transcription_service.request_transcript(video_id)
         if result.get("result"):
             transcript_result = result["result"]
             metadata = transcript_result.get("metadata", {})
@@ -158,7 +126,8 @@ def get_youtube_audio_transcript(video_id: str) -> str:
         Detailed background transcription status, including transcript once completed
     """
     try:
-        job = background_transcription_service.get_job_status(video_id)
+        container = get_service_container()
+        job = container.background_transcription_service.get_job_status(video_id)
         if not job:
             return f"Error: No background transcription status found for video {video_id}"
 
@@ -192,11 +161,9 @@ def clear_cache(video_id: str) -> str:
         Confirmation message with cache clearing status
     """
     try:
-        # Extract video ID if full URL provided
-        video_id = youtube_service.get_video_id(video_id)
-
-        # Clear cache
-        result = cache_service.clear_cache(video_id)
+        container = get_service_container()
+        video_id = container.youtube_service.get_video_id(video_id)
+        result = container.cache_service.clear_cache(video_id)
 
         if result['success']:
             return f"✓ {result['message']}"
@@ -209,22 +176,3 @@ def clear_cache(video_id: str) -> str:
 
 if not settings.APP_MCP_HIDE_CLEAR_CACHE:
     clear_cache = mcp.tool()(clear_cache)
-
-
-# Mount MCP server to FastAPI app (will be mounted in main.py)
-def mount_mcp(app):
-    """
-    Mount MCP HTTP endpoint to FastAPI app at /api/v1/mcp.
-
-    This endpoint supports StreamableHttpTransport for production use.
-    Clients can connect using: StreamableHttpTransport(url="http://localhost:8000/api/v1/mcp")
-    """
-    _mcp_middleware = build_mcp_middleware_from_settings()
-
-    mcp_http_app = mcp.http_app(
-        path="/",
-        stateless_http=True,
-        middleware=_mcp_middleware,
-    )
-
-    app.mount("/api/v1/mcp", mcp_http_app)

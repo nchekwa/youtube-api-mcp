@@ -1,23 +1,29 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+from time import monotonic
 import logging
+from pathlib import Path
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.constants import APP_VERSION
 from app.config import settings
 from app.routers import transcript
 from app.routers import transcript_from_audio
-from app.models import HealthResponse, CacheResponse
-from app.services.cache_service import CacheService
+from app.middleware.auth import API_KEYS, build_mcp_middleware_from_settings, verify_api_key
+from app.models import CacheClearResponse, CacheListResponse, CacheResponse, HealthResponse
 from app.mcp.server import mcp
-from app.middleware.auth import build_mcp_middleware_from_settings
 from app.middleware.process_time import ProcessTimeMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+
+from app.rate_limiter import limiter
+from app.services.service_container import get_service_container
 
 
 logger = logging.getLogger("uvicorn.error")
-
-# Initialize services
-cache_service = CacheService()
+app_started_at = monotonic()
+_default_dependencies = [Depends(verify_api_key)] if API_KEYS else []
 
 _mcp_middleware = build_mcp_middleware_from_settings()
 
@@ -34,18 +40,16 @@ mcp_lifespan = getattr(mcp_http_app, 'lifespan', None)
 if mcp_lifespan is None and hasattr(mcp_http_app, 'app'):
     mcp_lifespan = getattr(mcp_http_app.app, 'lifespan', None)
 
-# Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address)
-
-
 @asynccontextmanager
 async def app_lifespan(app_instance: FastAPI):
+    container = get_service_container()
     backend = (settings.APP_TRANSCRIPTION_BACKEND or "").split("#", 1)[0].strip().lower() or "faster-whisper"
     logger.info("Application startup with transcription backend='%s'", backend)
     logger.info(
         "Application startup with transcript_from_audio enabled=%s",
         settings.APP_TRANSCRIPT_FROM_AUDIO,
     )
+    container.job_service.mark_stale_jobs_failed()
 
     if mcp_lifespan is None:
         yield
@@ -58,7 +62,7 @@ async def app_lifespan(app_instance: FastAPI):
 app = FastAPI(
     title="YouTube Transcript API",
     description="API service to fetch YouTube video transcripts with metadata and caching",
-    version="1.0.0",
+    version=APP_VERSION,
     root_path=settings.APP_ROOT_PATH,
     lifespan=app_lifespan,
 )
@@ -68,6 +72,15 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Add middleware
 app.add_middleware(ProcessTimeMiddleware)
+
+if settings.cors_allow_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allow_origins,
+        allow_credentials=settings.APP_CORS_ALLOW_CREDENTIALS,
+        allow_methods=settings.cors_allow_methods or ["*"],
+        allow_headers=settings.cors_allow_headers or ["*"],
+    )
 
 # Include routers
 app.include_router(transcript.router, prefix=settings.APP_API_PREFIX)
@@ -83,13 +96,13 @@ async def root():
     """Root endpoint with API information (hidden from Swagger)."""
     return {
         "service": "YouTube Transcript API",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "status": "running",
         "docs": "/docs",
         "endpoints": {
             "health": f"{settings.APP_API_PREFIX}/health",
             "transcript": f"{settings.APP_API_PREFIX}/youtube/transcript/{{video_id}}",
-            "transcript_raw": f"{settings.APP_API_PREFIX}/youtube/transcript/{{video_id}}/raw",
+            "transcript_raw": f"{settings.APP_API_PREFIX}/youtube/transcript/raw/{{video_id}}",
             "audio_transcript_request": f"{settings.APP_API_PREFIX}/youtube/audio-transcript/{{video_id}}",
             "audio_transcript_status": f"{settings.APP_API_PREFIX}/youtube/audio-transcript/{{video_id}}",
             "mcp": f"{settings.APP_API_PREFIX}/mcp (StreamableHttpTransport)"
@@ -100,20 +113,92 @@ async def root():
 @app.get(f"{settings.APP_API_PREFIX}/health", response_model=HealthResponse, tags=["default"])
 async def health_check():
     """Health check endpoint with cache information."""
+    container = get_service_container()
+    cache_path = Path(container.cache_service.cache_dir)
     return HealthResponse(
-        status="healthy"
+        status="healthy",
+        version=APP_VERSION,
+        uptime_seconds=monotonic() - app_started_at,
+        transcription_backend=settings.APP_TRANSCRIPTION_BACKEND,
+        transcript_from_audio_enabled=settings.APP_TRANSCRIPT_FROM_AUDIO,
+        cache_path=str(cache_path),
+        cache_accessible=cache_path.exists() and cache_path.is_dir(),
+        whisper_model_loaded=container.background_transcription_service.is_model_loaded(),
     )
 
 
 @app.get(f"{settings.APP_API_PREFIX}/cache", response_model=CacheResponse, tags=["default"])
 async def cache_check():
     """Cache check endpoint with cache information."""
-    cache_size = cache_service.get_cache_size()
+    container = get_service_container()
+    cache_size = container.cache_service.get_cache_size()
+    cache_size_bytes = container.cache_service.get_cache_size_bytes()
     return CacheResponse(
         status="healthy",
         cache_size=cache_size,
-        cache_path=str(cache_service.cache_dir)
+        cache_path=str(container.cache_service.cache_dir),
+        cache_size_bytes=cache_size_bytes,
+        cache_size_mb=container.cache_service.get_cache_size_mb(),
+        max_cache_size_mb=settings.APP_MAX_CACHE_SIZE_MB,
     )
+
+
+@app.get(
+    f"{settings.APP_API_PREFIX}/cache/entries",
+    response_model=CacheListResponse,
+    tags=["default"],
+    dependencies=_default_dependencies,
+)
+@limiter.limit("20/minute")
+async def list_cache_entries(request: Request):
+    """List all cached transcript entries."""
+    del request
+    container = get_service_container()
+    entries = container.cache_service.list_cache_entries()
+    return CacheListResponse(
+        status="healthy",
+        entries=entries,
+        cache_size=container.cache_service.get_cache_size(),
+        cache_size_bytes=container.cache_service.get_cache_size_bytes(),
+        cache_size_mb=container.cache_service.get_cache_size_mb(),
+        max_cache_size_mb=settings.APP_MAX_CACHE_SIZE_MB,
+    )
+
+
+@app.delete(
+    f"{settings.APP_API_PREFIX}/cache",
+    response_model=CacheClearResponse,
+    tags=["default"],
+    dependencies=_default_dependencies,
+)
+@limiter.limit("5/minute")
+async def clear_all_cache(request: Request):
+    """Clear all cache entries."""
+    del request
+    container = get_service_container()
+    return CacheClearResponse(**container.cache_service.clear_all_cache())
+
+
+@app.delete(
+    f"{settings.APP_API_PREFIX}/cache/{{video_id}}",
+    response_model=CacheClearResponse,
+    tags=["default"],
+    dependencies=_default_dependencies,
+)
+@limiter.limit("10/minute")
+async def clear_cache_entry(request: Request, video_id: str):
+    """Clear cache entry for a specific video."""
+    del request
+    container = get_service_container()
+    try:
+        normalized_video_id = container.youtube_service.get_video_id(video_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    result = container.cache_service.clear_cache(normalized_video_id)
+    if not result.get("success") and result.get("deleted_entries", 0) == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result["message"])
+    return CacheClearResponse(**result)
 
 
 def custom_openapi():
@@ -179,13 +264,7 @@ async with streamable_http_transport("http://localhost:8000/api/v1/mcp") as tran
         # Call a tool - get transcript with basic metadata
         result = await session.call_tool(
             "get_youtube_transcript",
-            arguments={{"video_id": "9Wg6tiaar9M", "full_metadata": False}}
-        )
-
-        # Call a tool - get transcript with full metadata
-        result = await session.call_tool(
-            "get_youtube_transcript",
-            arguments={{"video_id": "9Wg6tiaar9M", "full_metadata": True}}
+            arguments={{"video_id": "9Wg6tiaar9M"}}
         )
 {clear_cache_example_doc}
 ```

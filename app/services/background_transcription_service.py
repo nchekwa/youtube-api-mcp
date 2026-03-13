@@ -7,6 +7,7 @@ import subprocess
 import threading
 
 from app.config import settings
+from app.utils.transcript_utils import extract_basic_metadata
 from app.services.transcript_from_audio_cache_service import TranscriptFromAudioCacheService
 from app.services.job_service import ACTIVE_JOB_STATES, JobService
 from app.services.transcription_backend_service import TranscriptionBackendService
@@ -55,6 +56,7 @@ class BackgroundTranscriptionService:
         self.job_service.mark_stale_jobs_failed()
 
     def request_transcript(self, url_or_id: str) -> dict:
+        self.job_service.mark_stale_jobs_failed()
         video_id = self.youtube_service.get_video_id(url_or_id)
         backend = self.transcription_backend_service.get_backend_name()
         backend_model = self.transcription_backend_service.get_backend_model_key()
@@ -103,8 +105,12 @@ class BackgroundTranscriptionService:
         }
 
     def get_job_status(self, video_id: str) -> dict | None:
+        self.job_service.mark_stale_jobs_failed()
         normalized_video_id = self.youtube_service.get_video_id(video_id)
         return self.job_service.get_job(normalized_video_id)
+
+    def is_model_loaded(self) -> bool:
+        return self._model is not None
 
     def _ensure_job_started(self, video_id: str) -> None:
         with self._lock:
@@ -203,7 +209,7 @@ class BackgroundTranscriptionService:
                 "video_id": video_id,
                 "transcript": transcript_text,
                 "language": language or "unknown",
-                "metadata": self._extract_basic_metadata(metadata),
+                "metadata": extract_basic_metadata(metadata).model_dump(),
                 "source": source,
                 "cache_used": False,
                 "cached_at": None,
@@ -307,14 +313,3 @@ class BackgroundTranscriptionService:
         if job.get("error"):
             logger.error("[%s] error=%s", video_id, job.get("error"))
         return job
-
-    def _extract_basic_metadata(self, metadata: dict) -> dict:
-        return {
-            "title": metadata.get("title", "Unknown"),
-            "author": metadata.get("author", metadata.get("uploader", "Unknown")),
-            "duration": metadata.get("duration", 0),
-            "publish_date": metadata.get("upload_date", metadata.get("publish_date", "Unknown")),
-            "view_count": metadata.get("view_count", 0),
-            "thumbnail": metadata.get("thumbnail"),
-            "description": metadata.get("description"),
-        }
