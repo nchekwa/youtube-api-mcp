@@ -97,8 +97,8 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
 
     @property
-    def api_key_value(self) -> str:
-        return (self.APP_X_API_KEY or self.APP_API_KEY or "").strip()
+    def auth_api_key_value(self) -> str:
+        return (self.APP_X_API_KEY or "").strip()
 
     @property
     def cors_allow_origins(self) -> list[str]:

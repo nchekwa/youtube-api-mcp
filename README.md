@@ -411,7 +411,7 @@ Key groups:
 - Optional API key authentication
 - Logging and port binding
 
-`_APP_API_KEY` is used for external provider authentication. `_APP_X_API_KEY` enables API access control for incoming HTTP and MCP requests.
+`_APP_API_KEY` is used only for external provider authentication. `_APP_X_API_KEY` independently enables API access control for incoming HTTP and MCP requests. Leaving `_APP_X_API_KEY` empty keeps incoming API and MCP authentication disabled.
 
 ### Backend Examples
 
