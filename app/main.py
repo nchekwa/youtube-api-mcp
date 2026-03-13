@@ -1,6 +1,9 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
+import logging
 from app.config import settings
 from app.routers import transcript
+from app.routers import transcript_from_audio
 from app.models import HealthResponse, CacheResponse
 from app.services.cache_service import CacheService
 from app.mcp.server import mcp
@@ -9,6 +12,9 @@ from app.middleware.process_time import ProcessTimeMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+
+
+logger = logging.getLogger("uvicorn.error")
 
 # Initialize services
 cache_service = CacheService()
@@ -31,13 +37,30 @@ if mcp_lifespan is None and hasattr(mcp_http_app, 'app'):
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
+
+@asynccontextmanager
+async def app_lifespan(app_instance: FastAPI):
+    backend = (settings.APP_TRANSCRIPTION_BACKEND or "").split("#", 1)[0].strip().lower() or "faster-whisper"
+    logger.info("Application startup with transcription backend='%s'", backend)
+    logger.info(
+        "Application startup with transcript_from_audio enabled=%s",
+        settings.APP_TRANSCRIPT_FROM_AUDIO,
+    )
+
+    if mcp_lifespan is None:
+        yield
+        return
+
+    async with mcp_lifespan(app_instance):
+        yield
+
 # Create main app with MCP lifespan (if available)
 app = FastAPI(
     title="YouTube Transcript API",
     description="API service to fetch YouTube video transcripts with metadata and caching",
     version="1.0.0",
     root_path=settings.APP_ROOT_PATH,
-    lifespan=mcp_lifespan,  # Pass MCP lifespan to main app
+    lifespan=app_lifespan,
 )
 
 app.state.limiter = limiter
@@ -48,6 +71,7 @@ app.add_middleware(ProcessTimeMiddleware)
 
 # Include routers
 app.include_router(transcript.router, prefix=settings.APP_API_PREFIX)
+app.include_router(transcript_from_audio.router, prefix=settings.APP_API_PREFIX)
 
 # Mount MCP HTTP endpoint at /api/v1/mcp
 # (mounting is required so the internal Starlette app sees path "/" and not "/api/v1/mcp")
@@ -66,6 +90,8 @@ async def root():
             "health": f"{settings.APP_API_PREFIX}/health",
             "transcript": f"{settings.APP_API_PREFIX}/youtube/transcript/{{video_id}}",
             "transcript_raw": f"{settings.APP_API_PREFIX}/youtube/transcript/{{video_id}}/raw",
+            "audio_transcript_request": f"{settings.APP_API_PREFIX}/youtube/audio-transcript/{{video_id}}",
+            "audio_transcript_status": f"{settings.APP_API_PREFIX}/youtube/audio-transcript/{{video_id}}",
             "mcp": f"{settings.APP_API_PREFIX}/mcp (StreamableHttpTransport)"
         }
     }
@@ -98,6 +124,18 @@ def custom_openapi():
 
     from fastapi.openapi.utils import get_openapi
 
+    clear_cache_tool_doc = ""
+    clear_cache_example_doc = ""
+    if not settings.APP_MCP_HIDE_CLEAR_CACHE:
+        clear_cache_tool_doc = "- `clear_cache` - Clear cached transcript for a specific video\n"
+        clear_cache_example_doc = """
+        # Call a tool - clear cache
+        result = await session.call_tool(
+            \"clear_cache\",
+            arguments={\"video_id\": \"9Wg6tiaar9M\"}
+        )
+"""
+
     openapi_schema = get_openapi(
         title=app.title,
         version=app.version,
@@ -105,12 +143,7 @@ def custom_openapi():
         routes=app.routes,
     )
 
-    # Add MCP endpoint as documentation-only
-    openapi_schema["paths"]["/api/v1/mcp"] = {
-        "post": {
-            "tags": ["MCP"],
-            "summary": "MCP Server (Model Context Protocol)",
-            "description": """# Model Context Protocol (MCP) Server
+    mcp_description = f"""# Model Context Protocol (MCP) Server
 
 This API provides an MCP server endpoint using **StreamableHttpTransport**.
 
@@ -121,7 +154,9 @@ This API provides an MCP server endpoint using **StreamableHttpTransport**.
 
 **Available Tools:**
 - `get_youtube_transcript` - Fetch transcript with metadata from YouTube videos
-- `clear_cache` - Clear cached transcript for a specific video
+- `request_youtube_audio_transcript` - Queue transcript_from_audio generation using the configured backend
+- `get_youtube_audio_transcript` - Check background transcription status by `video_id`
+{clear_cache_tool_doc}
 
 **Connection Details:**
 - **URL:** `/api/v1/mcp` (mounted at this path)
@@ -144,26 +179,28 @@ async with streamable_http_transport("http://localhost:8000/api/v1/mcp") as tran
         # Call a tool - get transcript with basic metadata
         result = await session.call_tool(
             "get_youtube_transcript",
-            arguments={"video_id": "9Wg6tiaar9M", "full_metadata": False}
+            arguments={{"video_id": "9Wg6tiaar9M", "full_metadata": False}}
         )
 
         # Call a tool - get transcript with full metadata
         result = await session.call_tool(
             "get_youtube_transcript",
-            arguments={"video_id": "9Wg6tiaar9M", "full_metadata": True}
+            arguments={{"video_id": "9Wg6tiaar9M", "full_metadata": True}}
         )
-
-        # Call a tool - clear cache
-        result = await session.call_tool(
-            "clear_cache",
-            arguments={"video_id": "9Wg6tiaar9M"}
-        )
+{clear_cache_example_doc}
 ```
 
 **Note:** This documentation is for reference only.
 Actual MCP communication is handled by FastMCP via POST to `/api/v1/mcp`.
 Requests use SSE (Server-Sent Events) for real-time bidirectional messaging.
-""",
+"""
+
+    # Add MCP endpoint as documentation-only
+    openapi_schema["paths"]["/api/v1/mcp"] = {
+        "post": {
+            "tags": ["MCP"],
+            "summary": "MCP Server (Model Context Protocol)",
+            "description": mcp_description,
             "operationId": "mcp_server",
             "requestBody": {
                 "description": "MCP JSON-RPC 2.0 request",

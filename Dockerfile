@@ -1,10 +1,13 @@
-FROM python:3.14-alpine AS builder
+FROM python:3.12-slim AS builder
 WORKDIR /app
-RUN apk add --no-cache gcc musl-dev linux-headers
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-FROM python:3.14-alpine
+FROM python:3.12-slim
 WORKDIR /app
 COPY --from=builder /install /usr/local
 COPY ./app ./app
@@ -12,7 +15,11 @@ RUN mkdir -p /app/cache
 EXPOSE 8000
 
 # Install curl for healthcheck
-RUN apk add --no-cache curl
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ffmpeg \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Metadata
 LABEL org.opencontainers.image.title="YouTube Transcript API"
@@ -26,4 +33,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Use environment variables for host and port
 # Default to 0.0.0.0:8000 if _APP_PORT is not set
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${_APP_PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${_APP_PORT:-8000} --log-config /app/app/uvicorn_log_config.json"]

@@ -19,30 +19,13 @@ services:
       - "8000:8000"
     volumes:
       - ./cache:/app/cache
+    env_file:
+      - path: .env
+        required: false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 5s
-    environment:
-      # API Paths
-      - _APP_ROOT_PATH
-      - _APP_API_PREFIX
-
-      # Cache
-      - _APP_CACHE_DIR
-      - _APP_MAX_CACHE_SIZE_MB
-      - _APP_CACHE_TTL_DAYS
-
-      # Functionality
-      - _APP_USE_CACHE_DEFAULT
-
-      # API Key Authentication
-      - _APP_X_API_KEY
-      - _APP_X_API_KEY_HEADER
-
-      # System
-      - _APP_LOG_LEVEL
-      - _APP_PORT
 

@@ -1,0 +1,5 @@
+_APP_LOG_LEVEL=DEBUG
+
+
+_APP_TRANSCRIPTION_BACKEND=assembly # Transcription backend: faster-whisper|assembly|openai|gemini
+_APP_API_KEY=38ac001d2b7c42aeaf8db07b1c865308

@@ -14,6 +14,15 @@ except ImportError:
     yt_dlp = None
 
 
+class TranscriptFetchError(ValueError):
+    """Structured failure raised when direct YouTube transcript fetching fails."""
+
+    def __init__(self, reason: str, *, transcript_from_audio_allowed: bool):
+        super().__init__(reason)
+        self.reason = reason
+        self.transcript_from_audio_allowed = transcript_from_audio_allowed
+
+
 class YouTubeService:
     """Service for fetching YouTube video transcripts and metadata."""
 
@@ -63,7 +72,7 @@ class YouTubeService:
             Dict with transcript data including metadata
 
         Raises:
-            ValueError: If video is invalid or transcript not available
+            TranscriptFetchError: If transcript cannot be fetched directly from YouTube
         """
         def _is_transient_network_error(exc: BaseException) -> bool:
             seen = set()
@@ -101,7 +110,10 @@ class YouTubeService:
                     available = list(transcript_data)
 
                 if not available:
-                    raise ValueError(f"No transcript found for video {video_id}")
+                    raise TranscriptFetchError(
+                        f"No transcript found for video {video_id}",
+                        transcript_from_audio_allowed=True,
+                    )
 
                 first_transcript = available[0]
                 transcript_list = first_transcript.fetch()
@@ -109,7 +121,7 @@ class YouTubeService:
 
                 transcript_text = " ".join([entry.text for entry in transcript_list])
 
-                metadata = self._get_video_metadata(video_id)
+                metadata = self.get_video_metadata(video_id)
 
                 return {
                     "video_id": video_id,
@@ -121,18 +133,42 @@ class YouTubeService:
                 }
 
             except TranscriptsDisabled:
-                raise ValueError(f"Transcripts are disabled for video {video_id}")
+                raise TranscriptFetchError(
+                    f"Transcripts are disabled for video {video_id}",
+                    transcript_from_audio_allowed=True,
+                )
             except NoTranscriptFound:
-                raise ValueError(f"No transcript found for video {video_id}")
+                raise TranscriptFetchError(
+                    f"No transcript found for video {video_id}",
+                    transcript_from_audio_allowed=True,
+                )
             except VideoUnavailable:
-                raise ValueError(f"Video {video_id} is unavailable")
+                raise TranscriptFetchError(
+                    f"Video {video_id} is unavailable",
+                    transcript_from_audio_allowed=False,
+                )
             except Exception as e:
                 if attempt < attempts and _is_transient_network_error(e):
                     delay = base_delay_s * (2 ** (attempt - 1))
                     delay = delay * (1.0 + random.random() * 0.25)
                     time.sleep(delay)
                     continue
-                raise ValueError(f"Error fetching transcript: {str(e)}")
+                raise TranscriptFetchError(
+                    f"Error fetching transcript: {str(e)}",
+                    transcript_from_audio_allowed=True,
+                )
+
+    def get_video_metadata(self, video_id: str) -> dict:
+        """
+        Fetch video metadata using yt-dlp.
+
+        Args:
+            video_id: YouTube video ID
+
+        Returns:
+            Dict with all available video metadata
+        """
+        return self._get_video_metadata(video_id)
 
     def _get_video_metadata(self, video_id: str) -> dict:
         """
